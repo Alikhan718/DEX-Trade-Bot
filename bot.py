@@ -13,6 +13,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import aiohttp
 
 # Database ORM
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
@@ -135,41 +137,22 @@ class SolanaDEXBot:
     def __init__(self):
         """Initialize bot with secure configuration"""
         try:
-            # Bot and Router initialization with timeout settings
-            self.bot = Bot(
-                token=Config.TELEGRAM_BOT_TOKEN,
-                default=DefaultBotProperties(parse_mode="HTML")
-            )
+            # Initialize price tracking attributes
+            self.sol_price = 0
+            self.last_price_update = None
             
-            # Set timeout for the bot's session
-            self.bot.session.timeout = 30  # Changed from _session to session
+            # Initialize bot components
+            self.bot = Bot(token=Config.TELEGRAM_BOT_TOKEN)
+            self.dp = Dispatcher(storage=MemoryStorage())
+            self.solana_client = AsyncClient(Config.SOLANA_RPC_URL)
             
-            self.storage = MemoryStorage()
-            self.dp = Dispatcher(storage=self.storage)
-            self.router = Router()
-            
-            # Solana RPC Client with timeout
-            self.solana_client = AsyncClient(
-                Config.SOLANA_RPC_URL,
-                timeout=30
-            )
-            
-            # Database setup with async support
-            self.engine = create_engine(
-                Config.DATABASE_URL,
-                echo=True,
-                pool_pre_ping=True,
-                pool_recycle=3600
-            )
-            Base.metadata.create_all(self.engine)
-            self.Session = sessionmaker(
-                bind=self.engine,
-                expire_on_commit=False
-            )
+            # Initialize database
+            engine = create_engine(Config.DATABASE_URL)
+            Base.metadata.create_all(engine)
+            self.Session = sessionmaker(bind=engine)
             
             # Register handlers
             self._register_handlers()
-            self.dp.include_router(self.router)
             
             logger.info("Bot initialized successfully")
         
@@ -180,55 +163,67 @@ class SolanaDEXBot:
     def _register_handlers(self):
         """Register message and callback handlers"""
         # Command handlers
-        self.router.message.register(self.cmd_start, Command("start"))
-        self.router.message.register(self.import_wallet, Command("import_wallet"))
-        self.router.message.register(self.list_top_traders, Command("top_traders"))
-        self.router.message.register(self.follow_trader, Command("follow"))
+        self.dp.message.register(self.cmd_start, Command("start"))
+        self.dp.message.register(self.import_wallet, Command("import_wallet"))
         
-        # Callback handlers
-        self.router.callback_query.register(
-            self.on_show_private_key,
-            lambda c: c.data == "show_private_key"
-        )
-        self.router.callback_query.register(
-            self.on_import_wallet_button,
-            lambda c: c.data == "import_wallet"
-        )
-        self.router.callback_query.register(
-            self.on_top_traders_button,
-            lambda c: c.data == "top_traders"
-        )
+        # Callback query handlers
+        self.dp.callback_query.register(self.on_copy_trader_button, lambda c: c.data == "copy_trader")
+        self.dp.callback_query.register(self.on_my_copies_button, lambda c: c.data == "my_copies")
+        self.dp.callback_query.register(self.on_show_private_key_button, lambda c: c.data == "show_private_key")
+        self.dp.callback_query.register(self.on_import_wallet_button, lambda c: c.data == "import_wallet")
+        self.dp.callback_query.register(self.on_main_menu_button, lambda c: c.data == "main_menu")
     
     async def show_main_menu(self, message: types.Message):
-        """Display the main menu with inline buttons"""
-        keyboard = types.InlineKeyboardMarkup(
-            inline_keyboard=[
+        """Show main menu with wallet info"""
+        try:
+            session = self.Session()
+            user = session.query(User).filter(
+                User.telegram_id == message.from_user.id
+            ).first()
+            
+            if not user:
+                # Generate new Solana wallet for new user
+                new_keypair = Keypair()
+                user = User(
+                    telegram_id=message.from_user.id,
+                    solana_wallet=str(new_keypair.pubkey()),
+                    private_key=base58.b58encode(bytes(new_keypair)).decode(),
+                    referral_code=str(uuid.uuid4())[:8],
+                    total_volume=0.0
+                )
+                session.add(user)
+                session.commit()
+            
+            # Get wallet balance and SOL price
+            balance = await self.get_wallet_balance(user.solana_wallet)
+            sol_price = await self.get_sol_price()
+            usd_balance = balance * sol_price
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    types.InlineKeyboardButton(
-                        text="🔗 Показать приватный ключ",
-                        callback_data="show_private_key"
-                    )
+                    InlineKeyboardButton(text="💰 Копировать трейдера", callback_data="copy_trader"),
+                    InlineKeyboardButton(text="📊 Мои копии", callback_data="my_copies")
                 ],
                 [
-                    types.InlineKeyboardButton(
-                        text="📥 Импортировать кошелек",
-                        callback_data="import_wallet"
-                    )
-                ],
-                [
-                    types.InlineKeyboardButton(
-                        text="📊 Топ трейдеры",
-                        callback_data="top_traders"
-                    )
+                    InlineKeyboardButton(text="🔑 Показать приватный ключ", callback_data="show_private_key"),
+                    InlineKeyboardButton(text="📥 Импортировать кошелек", callback_data="import_wallet")
                 ]
-            ]
-        )
-        
-        await message.answer(
-            "🤖 Добро пожаловать в DEX Trade Bot!\n\n"
-            "Выберите действие:",
-            reply_markup=keyboard
-        )
+            ])
+            
+            await message.answer(
+                f"💳 Ваш кошелек: <code>{user.solana_wallet[:8]}...{user.solana_wallet[-4:]}</code>\n\n"
+                f"💰 Баланс: {balance:.4f} SOL (${usd_balance:.2f})\n\n"
+                "💡 Вы можете отправить SOL на этот адрес или импортировать существующий кошелек.\n\n"
+                "Выберите действие:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error showing main menu: {e}")
+            await message.answer("❌ Ошибка при загрузке меню")
+        finally:
+            session.close()
 
     async def cmd_start(self, message: types.Message):
         """Handle /start command - creates new wallet for user"""
@@ -522,7 +517,7 @@ class SolanaDEXBot:
                 session.commit()
                 
                 await message.answer(
-                    "✅ Кошелек успешно импортирован!\n"
+                    "✅ Кошелек ��спешно импортирован!\n"
                     f"Адрес: <code>{public_key[:8]}...</code>",
                     parse_mode="HTML"
                 )
@@ -539,6 +534,96 @@ class SolanaDEXBot:
             await message.answer(
                 "❌ Ошибка при импорте кошелька. Попробуйте еще раз."
             )
+
+    async def get_sol_price(self):
+        """Get current SOL price in USD"""
+        # Update price only every 5 minutes
+        if (self.last_price_update and 
+            datetime.now() - self.last_price_update < timedelta(minutes=5)):
+            return self.sol_price
+            
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd') as response:
+                    data = await response.json()
+                    self.sol_price = data['solana']['usd']
+                    self.last_price_update = datetime.now()
+                    return self.sol_price
+        except Exception as e:
+            logger.error(f"Error fetching SOL price: {e}")
+            return self.sol_price
+
+    async def get_wallet_balance(self, wallet_address: str) -> float:
+        """Get SOL balance for wallet"""
+        try:
+            response = await self.solana_client.get_balance(PublicKey.from_string(wallet_address))
+            return response.value / 1e9  # Convert lamports to SOL
+        except Exception as e:
+            logger.error(f"Error fetching wallet balance: {e}")
+            return 0.0
+
+    # Add "Back to menu" button to other menus
+    async def on_copy_trader_button(self, callback_query: types.CallbackQuery):
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Найти трейдера", callback_data="find_trader")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+        ])
+        await callback_query.message.edit_text(
+            "👥 Копирование трейдеров\n\n"
+            "Выберите действие:",
+            reply_markup=keyboard
+        )
+
+    async def on_my_copies_button(self, callback_query: types.CallbackQuery):
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+        ])
+        await callback_query.message.edit_text(
+            "📊 Ваши активные копии:\n\n"
+            "(Список будет здесь)",
+            reply_markup=keyboard
+        )
+
+    # Add handler for back button
+    async def on_main_menu_button(self, callback_query: types.CallbackQuery):
+        await callback_query.answer()
+        await self.show_main_menu(callback_query.message)
+
+    async def on_show_private_key_button(self, callback_query: types.CallbackQuery):
+        """Handle show private key button press"""
+        try:
+            session = self.Session()
+            user = session.query(User).filter(
+                User.telegram_id == callback_query.from_user.id
+            ).first()
+            
+            if user:
+                # Send private key in private message
+                await callback_query.message.answer(
+                    "🔑 Ваш приватный ключ:\n"
+                    f"<code>{user.private_key}</code>\n\n"
+                    "⚠️ Никому не показывайте этот ключ!",
+                    parse_mode="HTML"
+                )
+                # Delete message after 30 seconds
+                await asyncio.sleep(30)
+                await callback_query.message.delete()
+            else:
+                await callback_query.answer("❌ Кошелек не найден")
+        except Exception as e:
+            logger.error(f"Error showing private key: {e}")
+            await callback_query.answer("❌ Ошибка при показе приватного ключа")
+        finally:
+            session.close()
+
+    async def on_import_wallet_button(self, callback_query: types.CallbackQuery):
+        """Handle import wallet button press"""
+        await callback_query.message.answer(
+            "🔑 Чтобы импортировать кошелек, отправьте команду:\n"
+            "<code>/import_wallet PRIVATE_KEY</code>",
+            parse_mode="HTML"
+        )
+        await callback_query.answer()
 
 async def main():
     """Main async entry point"""
