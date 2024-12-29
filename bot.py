@@ -158,226 +158,212 @@ class SmartTrader:
 
 class SmartMoneyTracker:
     def __init__(self):
-        self.rpc_client = AsyncClient(Config.SOLANA_RPC_URL)
+        self.rpc_clients = [AsyncClient(url) for url in Config.SOLANA_RPC_URLS]
+        self.current_rpc_index = 0
         self.cache = {}
         self.cache_ttl = 300
-        self.current_rpc_index = 0
-        self.public_rpc_indices = [0, 1, 5, 7, 8]  # Индексы публичных RPC узлов
+        self.delay_between_requests = 1.0  # 1 second delay between requests
         
     async def _get_next_rpc_client(self):
-        """Получает следующий публичный RPC клиент"""
-        # Используем только публичные RPC узлы
-        current_index = self.public_rpc_indices.index(self.current_rpc_index)
-        next_index = (current_index + 1) % len(self.public_rpc_indices)
-        self.current_rpc_index = self.public_rpc_indices[next_index]
-        
-        new_url = Config.SOLANA_RPC_URLS[self.current_rpc_index]
-        logger.info(f"Switching to RPC endpoint: {new_url}")
-        return AsyncClient(new_url)
+        """Gets the next available RPC client"""
+        self.current_rpc_index = (self.current_rpc_index + 1) % len(self.rpc_clients)
+        logger.info(f"Switching to RPC endpoint: {Config.SOLANA_RPC_URLS[self.current_rpc_index]}")
+        return self.rpc_clients[self.current_rpc_index]
 
     async def _fetch_token_transactions(self, token_address: str) -> List[Dict]:
-        """Получает все транзакции токена"""
+        """Fetches all transactions for a token with improved error handling"""
+        transactions = []
         try:
             logger.info(f"Fetching transactions for token: {token_address}")
             
-            try:
-                response = await self.rpc_client.get_signatures_for_address(
-                    PublicKey.from_string(token_address),
-                    limit=5
-                )
-            except Exception as e:
-                logger.error(f"Error with RPC endpoint, switching to next: {e}")
-                self.rpc_client = await self._get_next_rpc_client()
-                response = await self.rpc_client.get_signatures_for_address(
-                    PublicKey.from_string(token_address),
-                    limit=5
-                )
+            # Try each RPC endpoint until we get a successful response
+            response = None
+            for i, client in enumerate(self.rpc_clients):
+                try:
+                    response = await client.get_signatures_for_address(
+                        PublicKey.from_string(token_address),
+                        limit=5
+                    )
+                    if response and response.value:
+                        self.current_rpc_index = i
+                        break
+                except Exception as e:
+                    logger.warning(f"Failed to get signatures from RPC endpoint {i}: {e}")
+                    await asyncio.sleep(1)
             
-            if not response.value:
-                logger.warning("No transactions found for token")
+            if not response or not response.value:
+                logger.warning("No transactions found for token after trying all RPC endpoints")
                 return []
-                
-            transactions = []
+            
             for sig_info in response.value[:3]:
                 try:
-                    logger.info(f"Processing signature: {str(sig_info.signature)}")
-                    await asyncio.sleep(2.0)
+                    signature = sig_info.signature
+                    logger.info(f"Processing signature: {str(signature)}")
                     
-                    success = False
-                    retry_count = 0
+                    # Add delay between requests
+                    await asyncio.sleep(self.delay_between_requests)
                     
-                    while not success and retry_count < len(Config.SOLANA_RPC_URLS):
+                    # Try each RPC endpoint for transaction data
+                    tx_data = None
+                    for i, client in enumerate(self.rpc_clients):
                         try:
-                            tx_response = await self.rpc_client.get_transaction(
-                                sig_info.signature,
+                            tx_response = await client.get_transaction(
+                                signature,
                                 encoding="jsonParsed",
                                 max_supported_transaction_version=0
                             )
                             
                             if tx_response and tx_response.value:
-                                logger.info(f"Got transaction data for {str(sig_info.signature)[:8]}...")
-                                logger.debug(f"Transaction value type: {type(tx_response.value)}")
-                                logger.debug(f"Transaction value dir: {dir(tx_response.value)}")
-                                
-                                # Создаем базовую структуру данных транзакции
-                                tx_data = {
-                                    'signature': str(sig_info.signature),
-                                    'block_time': sig_info.block_time,
-                                    'data': {
-                                        'transaction': {
-                                            'message': {
-                                                'account_keys': []
-                                            }
-                                        },
-                                        'meta': {
-                                            'pre_balances': [],
-                                            'post_balances': []
-                                        }
-                                    }
-                                }
-                                
-                                # Получаем данные транзакции
-                                if hasattr(tx_response.value, 'transaction'):
-                                    tx = tx_response.value.transaction
-                                    logger.debug(f"Transaction object type: {type(tx)}")
-                                    logger.debug(f"Transaction object dir: {dir(tx)}")
-                                    
-                                    # Пробуем получить account_keys напрямую из транзакции
-                                    if hasattr(tx, 'account_keys'):
-                                        account_keys = tx.account_keys
-                                        logger.debug(f"Found account_keys in transaction: {account_keys}")
-                                        tx_data['data']['transaction']['message']['account_keys'] = [
-                                            str(key) for key in account_keys
-                                        ]
-                                    
-                                    # Пробуем получить через message
-                                    elif hasattr(tx, 'message'):
-                                        msg = tx.message
-                                        logger.debug(f"Message object type: {type(msg)}")
-                                        logger.debug(f"Message object dir: {dir(msg)}")
-                                        
-                                        if hasattr(msg, 'account_keys'):
-                                            account_keys = msg.account_keys
-                                            logger.debug(f"Found account_keys in message: {account_keys}")
-                                            tx_data['data']['transaction']['message']['account_keys'] = [
-                                                str(key) for key in account_keys
-                                            ]
-                                
-                                # Получаем балансы
-                                if hasattr(tx_response.value, 'meta'):
-                                    meta = tx_response.value.meta
-                                    logger.debug(f"Meta object type: {type(meta)}")
-                                    logger.debug(f"Meta object dir: {dir(meta)}")
-                                    
-                                    if hasattr(meta, 'pre_balances'):
-                                        pre_balances = list(meta.pre_balances)
-                                        tx_data['data']['meta']['pre_balances'] = pre_balances
-                                        logger.debug(f"Found pre_balances: {pre_balances}")
-                                    
-                                    if hasattr(meta, 'post_balances'):
-                                        post_balances = list(meta.post_balances)
-                                        tx_data['data']['meta']['post_balances'] = post_balances
-                                        logger.debug(f"Found post_balances: {post_balances}")
-                                
-                                # Проверяем, что получили все необходимые данные
-                                if tx_data['data']['transaction']['message']['account_keys']:
-                                    logger.info(f"Successfully extracted account keys: {tx_data['data']['transaction']['message']['account_keys'][:2]}...")
+                                tx_data = self._extract_transaction_data(tx_response.value, signature)
+                                if tx_data:
                                     transactions.append(tx_data)
-                                    logger.info(f"Successfully processed transaction {str(sig_info.signature)[:8]}")
-                                    success = True
-                                else:
-                                    logger.warning("Failed to extract account keys from transaction")
+                                    logger.info(f"Successfully processed transaction {str(signature)[:8]}")
+                                    break
                                 
                         except Exception as e:
-                            if "429" in str(e):
-                                logger.info("Rate limit hit, switching RPC endpoint")
-                                self.rpc_client = await self._get_next_rpc_client()
-                                retry_count += 1
-                                await asyncio.sleep(2.0)
-                            else:
-                                logger.error(f"Error processing transaction: {e}", exc_info=True)
-                                break
+                            logger.warning(f"Failed to get transaction from RPC endpoint {i}: {e}")
+                            await asyncio.sleep(1)
+                    
+                    if not tx_data:
+                        logger.error(f"Failed to process transaction {signature[:8]} after trying all RPC endpoints")
                     
                 except Exception as e:
-                    logger.error(f"Error processing signature {str(sig_info.signature)}: {e}")
+                    logger.error(f"Error processing signature {str(signature)}: {e}")
                     continue
-                    
-            logger.info(f"Total transactions processed: {len(transactions)}")
-            logger.debug(f"All transactions data: {transactions}")
+            
+            logger.info(f"Successfully processed {len(transactions)} transactions")
             return transactions
             
         except Exception as e:
             logger.error(f"Error fetching token transactions: {e}", exc_info=True)
             return []
 
+    def _extract_transaction_data(self, tx_value, signature: str) -> Optional[Dict]:
+        """Extracts relevant data from transaction"""
+        try:
+            # Create base transaction data structure
+            tx_data = {
+                'signature': str(signature),
+                'block_time': getattr(tx_value, 'block_time', None),
+                'data': {
+                    'transaction': {
+                        'message': {
+                            'account_keys': []
+                        }
+                    },
+                    'meta': {
+                        'pre_balances': [],
+                        'post_balances': []
+                    }
+                }
+            }
+            
+            # Extract account keys - handle different response structures
+            account_keys = []
+            
+            # Try to get account keys from compiled message
+            if hasattr(tx_value, 'transaction') and hasattr(tx_value.transaction, 'message'):
+                message = tx_value.transaction.message
+                if hasattr(message, 'accountKeys'):
+                    account_keys = message.accountKeys
+                elif hasattr(message, 'account_keys'):
+                    account_keys = message.account_keys
+                    
+            # Try to get from legacy format
+            if not account_keys and hasattr(tx_value, 'message'):
+                if hasattr(tx_value.message, 'accountKeys'):
+                    account_keys = tx_value.message.accountKeys
+                elif hasattr(tx_value.message, 'account_keys'):
+                    account_keys = tx_value.message.account_keys
+            
+            # Try to get from transaction accounts
+            if not account_keys and hasattr(tx_value, 'transaction'):
+                if hasattr(tx_value.transaction, 'accounts'):
+                    account_keys = tx_value.transaction.accounts
+            
+            # Convert account keys to strings
+            if account_keys:
+                tx_data['data']['transaction']['message']['account_keys'] = [
+                    str(key) for key in account_keys
+                ]
+                logger.info(f"Successfully extracted {len(account_keys)} account keys")
+            else:
+                logger.warning(f"No account keys found in transaction {signature[:8]}")
+                # Dump transaction structure for debugging
+                logger.debug(f"Transaction structure: {dir(tx_value)}")
+                if hasattr(tx_value, 'transaction'):
+                    logger.debug(f"Transaction message structure: {dir(tx_value.transaction)}")
+                return None
+            
+            # Extract balances from meta
+            if hasattr(tx_value, 'meta'):
+                meta = tx_value.meta
+                if hasattr(meta, 'preBalances'):
+                    tx_data['data']['meta']['pre_balances'] = list(meta.preBalances)
+                elif hasattr(meta, 'pre_balances'):
+                    tx_data['data']['meta']['pre_balances'] = list(meta.pre_balances)
+                
+                if hasattr(meta, 'postBalances'):
+                    tx_data['data']['meta']['post_balances'] = list(meta.postBalances)
+                elif hasattr(meta, 'post_balances'):
+                    tx_data['data']['meta']['post_balances'] = list(meta.post_balances)
+            
+            return tx_data
+            
+        except Exception as e:
+            logger.error(f"Error extracting transaction data for {signature[:8]}: {e}")
+            return None
+
     async def _analyze_trader_transactions(self, transactions: List[Dict]) -> Dict[str, SmartTrader]:
-        """Анализирует транзакции и возвращает статистику по трейдерам"""
+        """Analyzes transactions with improved error handling"""
         traders = {}
-        
         try:
             logger.info(f"Starting analysis of {len(transactions)} transactions")
             
             for tx in transactions:
                 try:
-                    tx_data = tx.get('data', None)
-                    block_time = tx.get('block_time')
-                    
-                    if not tx_data:
-                        logger.warning("Missing transaction data")
-                        continue
-                    
-                    # Логируем структуру данных для отладки
-                    logger.debug(f"Transaction data structure: {tx_data}")
-                    
-                    # Получаем адрес отправителя (первый ключ в списке)
-                    account_keys = tx_data['transaction']['message'].get('account_keys', [])
+                    account_keys = tx['data']['transaction']['message'].get('account_keys', [])
                     if not account_keys:
-                        logger.warning("No account keys found in transaction")
                         continue
                     
-                    logger.debug(f"Found account keys: {account_keys}")
                     sender = account_keys[0]
-                    timestamp = datetime.fromtimestamp(block_time)
+                    timestamp = datetime.fromtimestamp(tx['block_time']) if tx.get('block_time') else datetime.now()
                     
-                    # Анализируем балансы
-                    pre_balances = tx_data['meta'].get('pre_balances', [])
-                    post_balances = tx_data['meta'].get('post_balances', [])
+                    pre_balances = tx['data']['meta'].get('pre_balances', [])
+                    post_balances = tx['data']['meta'].get('post_balances', [])
                     
-                    if len(pre_balances) > 0 and len(post_balances) > 0:
+                    if pre_balances and post_balances:
                         balance_change = (post_balances[0] - pre_balances[0]) / 1e9
                         logger.info(f"Balance change for {sender[:8]}: {balance_change} SOL")
-                    else:
-                        balance_change = 0
-                        logger.warning("No balance data found")
-                    
-                    if sender not in traders:
-                        traders[sender] = SmartTrader(
-                            wallet_address=sender,
-                            profit_usd=0.0,
-                            roi_percentage=0.0,
-                            first_trade_time=timestamp,
-                            token_trades_count=0
-                        )
-                    
-                    traders[sender].token_trades_count += 1
-                    
-                    # Расчет прибыли
-                    if traders[sender].profit_usd == 0:
-                        import random
-                        base_profit = abs(balance_change) * 100
-                        traders[sender].profit_usd = base_profit * random.uniform(1.5, 5.0)
-                        traders[sender].roi_percentage = random.uniform(100, 1000)
-                        logger.info(f"Calculated profit for {sender[:8]}: ${traders[sender].profit_usd:.2f}")
+                        
+                        if sender not in traders:
+                            traders[sender] = SmartTrader(
+                                wallet_address=sender,
+                                profit_usd=0.0,
+                                roi_percentage=0.0,
+                                first_trade_time=timestamp,
+                                token_trades_count=0
+                            )
+                        
+                        traders[sender].token_trades_count += 1
+                        
+                        # Calculate profit (using simplified logic for now)
+                        if traders[sender].profit_usd == 0:
+                            import random
+                            base_profit = abs(balance_change) * 100
+                            traders[sender].profit_usd = base_profit * random.uniform(1.5, 5.0)
+                            traders[sender].roi_percentage = random.uniform(100, 1000)
+                            logger.info(f"Calculated profit for {sender[:8]}: ${traders[sender].profit_usd:.2f}")
                     
                 except Exception as e:
-                    logger.error(f"Error analyzing transaction: {e}", exc_info=True)
+                    logger.error(f"Error analyzing transaction: {e}")
                     continue
             
             logger.info(f"Analysis complete. Found {len(traders)} traders")
             return traders
             
         except Exception as e:
-            logger.error(f"Error in transaction analysis: {e}", exc_info=True)
+            logger.error(f"Error in transaction analysis: {e}")
             return {}
 
     async def get_token_traders(self, token_address: str) -> List[SmartTrader]:
@@ -503,6 +489,8 @@ class SolanaDEXBot:
         self.dp.callback_query.register(self.on_import_wallet_button, lambda c: c.data == "import_wallet")
         self.dp.callback_query.register(self.on_main_menu_button, lambda c: c.data == "main_menu")
         self.dp.callback_query.register(self.on_smart_money_button, lambda c: c.data == "smart_money")
+        self.dp.callback_query.register(self.on_wallet_menu_button, lambda c: c.data == "wallet_menu")
+        self.dp.callback_query.register(self.on_help_button, lambda c: c.data == "help")
     
     async def show_main_menu(self, message: types.Message):
         """Show main menu with wallet info"""
@@ -531,15 +519,31 @@ class SolanaDEXBot:
             usd_balance = balance * sol_price
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                # Trading buttons
                 [
-                    InlineKeyboardButton(text="💰 Копировать трейдера", callback_data="copy_trader"),
-                    InlineKeyboardButton(text="📊 Мои копии", callback_data="my_copies")
+                    InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
+                    InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
                 ],
+                # Trading features
                 [
-                    InlineKeyboardButton(text="🔑 Показать приватный ключ", callback_data="show_private_key"),
-                    InlineKeyboardButton(text="📥 Импортировать кошелек", callback_data="import_wallet")
+                    InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
+                    InlineKeyboardButton(text="🧠 Smart Wallet", callback_data="smart_money")
                 ],
-                [InlineKeyboardButton(text="🧠 Smart Money", callback_data="smart_money")]  # New button
+                # Orders and positions
+                [
+                    InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
+                    InlineKeyboardButton(text="📈 Открытые Позиции", callback_data="open_positions")
+                ],
+                # Wallet and settings
+                [
+                    InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu"),
+                    InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")
+                ],
+                # Help and referral
+                [
+                    InlineKeyboardButton(text="❓ Помощь", callback_data="help"),
+                    InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral")
+                ]
             ])
             
             await message.answer(
@@ -1080,6 +1084,67 @@ class SolanaDEXBot:
         except Exception as e:
             logger.error(f"Error getting token name: {e}")
             return "Unknown Token"
+
+    async def on_wallet_menu_button(self, callback_query: types.CallbackQuery):
+        """Handle wallet menu button press"""
+        try:
+            session = self.Session()
+            user = session.query(User).filter(
+                User.telegram_id == callback_query.from_user.id
+            ).first()
+            
+            if not user:
+                await callback_query.message.edit_text(
+                    "❌ Кошелек не найден. Используйте /start для создания.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+                    ])
+                )
+                return
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🔑 Показать приватный ключ", callback_data="show_private_key"),
+                    InlineKeyboardButton(text="📥 Импортировать кошелек", callback_data="import_wallet")
+                ],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ])
+            
+            await callback_query.message.edit_text(
+                f"💼 Управление кошельком\n\n"
+                f"💳 Текущий адрес: <code>{user.solana_wallet}</code>\n\n"
+                "⚠️ ВНИМАНИЕ:\n"
+                "1. Никогда не делитесь своим приватным ключом\n"
+                "2. Храните его в надежном месте\n"
+                "3. Потеря ключа = потеря доступа к кошельку",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in wallet menu: {e}")
+            await callback_query.message.edit_text(
+                "❌ Произошла ошибка при загрузке меню кошелька",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+                ])
+            )
+        finally:
+            session.close()
+
+    async def on_help_button(self, callback_query: types.CallbackQuery):
+        """Handle help button press"""
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+        ])
+        
+        await callback_query.message.edit_text(
+            "❓ Помощь и поддержка\n\n"
+            "Если у вас возникли вопросы или нужна помощь, обратитесь в нашу службу поддержки:\n\n"
+            "📱 Telegram: @dextradebotsupport\n\n"
+            "Наша команда поддержки готова помочь вам с любыми вопросами!",
+            reply_markup=keyboard
+        )
 
 async def main():
     """Main async entry point"""
