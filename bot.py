@@ -477,6 +477,8 @@ class SolanaDEXBot:
         # Command handlers
         self.router.message.register(self.show_main_menu, Command("start"))
         self.router.message.register(self.handle_smart_money_command, Command("smart"))
+        self.router.message.register(self.reset_user_data, Command("reset"))
+        self.router.message.register(self.import_wallet, Command("import_wallet"))  # Add import wallet command
         
         # State handlers
         self.router.message.register(
@@ -503,15 +505,35 @@ class SolanaDEXBot:
             if not user:
                 # Generate new Solana wallet for new user
                 new_keypair = Keypair()
+                # Store private key as a list of integers
+                private_key = list(bytes(new_keypair))
+                
                 user = User(
                     telegram_id=message.from_user.id,
                     solana_wallet=str(new_keypair.pubkey()),
-                    private_key=base58.b58encode(bytes(new_keypair)).decode(),
+                    private_key=str(private_key),  # Store as string representation of the array
                     referral_code=str(uuid.uuid4())[:8],
-                    total_volume=0.0
+                    total_volume=0.0,
+                    created_at=datetime.now(),
+                    last_activity=datetime.now()
                 )
                 session.add(user)
                 session.commit()
+                logger.info(f"Created new wallet for user {message.from_user.id}: {user.solana_wallet}")
+                
+                # Send welcome message for new users
+                await message.answer(
+                    "🎉 Добро пожаловать! Для вас создан новый Solana кошелек:\n\n"
+                    f"Адрес: <code>{user.solana_wallet}</code>\n\n"
+                    "⚠️ ВАЖНО: Храните приватный ключ в безопасном месте!\n"
+                    "Никогда не делитесь им ни с кем.\n"
+                    "Используйте кнопку «Показать приватный ключ» чтобы увидеть его.",
+                    parse_mode="HTML"
+                )
+            
+            # Update last activity
+            user.last_activity = datetime.now()
+            session.commit()
             
             # Get wallet balance and SOL price
             balance = await self.get_wallet_balance(user.solana_wallet)
@@ -547,7 +569,7 @@ class SolanaDEXBot:
             ])
             
             await message.answer(
-                f"💳 Ваш кошелек: <code>{user.solana_wallet[:8]}...{user.solana_wallet[-4:]}</code>\n\n"
+                f"💳 Ваш кошелек: <code>{user.solana_wallet}</code>\n\n"
                 f"💰 Баланс: {balance:.4f} SOL (${usd_balance:.2f})\n\n"
                 "💡 Вы можете отправить SOL на этот адрес или импортировать существующий кошелек.\n\n"
                 "Выберите действие:",
@@ -562,52 +584,8 @@ class SolanaDEXBot:
             session.close()
 
     async def cmd_start(self, message: types.Message):
-        """Handle /start command - creates new wallet for user"""
-        try:
-            session = self.Session()
-            try:
-                user = session.query(User).filter(
-                    User.telegram_id == message.from_user.id
-                ).first()
-                
-                if user:
-                    await self.show_main_menu(message)
-                else:
-                    # Generate new Solana wallet
-                    new_keypair = Keypair()  # Creates a new random keypair by default
-                    
-                    # Create user with new wallet
-                    user = User(
-                        telegram_id=message.from_user.id,
-                        solana_wallet=str(new_keypair.pubkey()),
-                        private_key=base58.b58encode(bytes(new_keypair)).decode(),
-                        referral_code=str(uuid.uuid4())[:8],
-                        total_volume=0.0
-                    )
-                    session.add(user)
-                    session.commit()
-                    
-                    await message.answer(
-                        "🎉 Добро пожаловать! Для вас создан новый Solana кошелек:\n\n"
-                        f"Адрес: <code>{str(new_keypair.pubkey())}</code>\n\n"
-                        "⚠️ ВАЖНО: Храните приватный ключ в безопасном месте!\n"
-                        "Никогда не делитесь им ни с кем.\n"
-                        "Используйте кнопку «Показать приватный ключ» чтобы увидеть его.",
-                        parse_mode="HTML"
-                    )
-                    await self.show_main_menu(message)
-                
-                logger.info(f"Start command handled for user {message.from_user.id}")
-                
-            except Exception as e:
-                session.rollback()
-                raise e
-            finally:
-                session.close()
-            
-        except Exception as e:
-            logger.error(f"Error handling start command: {e}")
-            await message.answer("❌ Ошибка при запуске бота. Попробуйте еще раз.")
+        """Handle /start command - show main menu or create new wallet"""
+        await self.show_main_menu(message)
 
     async def connect_wallet(self, message: types.Message):
         """Connect Solana wallet"""
@@ -803,31 +781,44 @@ class SolanaDEXBot:
         )
 
     async def import_wallet(self, message: types.Message):
-        """Import existing wallet using private key"""
+        """Import existing wallet using private key array"""
         try:
             # Delete message with private key for security
             await message.delete()
             
-            parts = message.text.split()
+            parts = message.text.split(maxsplit=1)
             if len(parts) != 2:
                 await message.answer(
-                    "❌ Пожалуйста, укажите приватный ключ:\n"
-                    "<code>/import_wallet PRIVATE_KEY</code>",
+                    "❌ Пожалуйста, укажите приватный ключ в формате массива:\n"
+                    "<code>/import_wallet [1,2,3,...]</code>",
                     parse_mode="HTML"
                 )
                 return
             
-            private_key = parts[1]
-            
             try:
-                # Validate private key and get public key
-                secret_bytes = base58.b58decode(private_key)
-                keypair = Keypair.from_bytes(secret_bytes)  # Use the full bytes
+                # Parse private key array from string
+                private_key_str = parts[1].strip()
+                if not (private_key_str.startswith('[') and private_key_str.endswith(']')):
+                    raise ValueError("Invalid array format")
+                
+                # Convert string array to list of integers
+                private_key_nums = [int(x.strip()) for x in private_key_str[1:-1].split(',')]
+                if len(private_key_nums) != 64:
+                    raise ValueError("Private key must be 64 bytes")
+                
+                # Convert to bytes and create keypair
+                private_key_bytes = bytes(private_key_nums)
+                keypair = Keypair.from_bytes(private_key_bytes)
                 public_key = str(keypair.pubkey())
                 
+                logger.info(f"Importing wallet with public key: {public_key[:8]}...")
+                
             except Exception as e:
-                logger.error(f"Invalid private key: {e}")
-                await message.answer("❌ Неверный формат приватного ключа")
+                logger.error(f"Invalid private key format: {e}")
+                await message.answer(
+                    "❌ Неверный формат приватного ключа\n"
+                    "Используйте формат: [1,2,3,...] (64 числа)"
+                )
                 return
             
             # Update database
@@ -837,31 +828,50 @@ class SolanaDEXBot:
                     User.telegram_id == message.from_user.id
                 ).first()
                 
-                if user:
-                    user.solana_wallet = public_key
-                    user.private_key = private_key
-                else:
+                if not user:
+                    # Create new user if doesn't exist
                     user = User(
                         telegram_id=message.from_user.id,
                         solana_wallet=public_key,
-                        private_key=private_key,
+                        private_key=private_key_str,  # Store original array string
                         referral_code=str(uuid.uuid4())[:8],
-                        total_volume=0.0
+                        total_volume=0.0,
+                        created_at=datetime.now(),
+                        last_activity=datetime.now()
                     )
                     session.add(user)
+                else:
+                    # Store old wallet info in log for recovery if needed
+                    logger.info(
+                        f"User {message.from_user.id} replacing wallet "
+                        f"from {user.solana_wallet[:8]}... to {public_key[:8]}..."
+                    )
+                    
+                    # Update existing user's wallet
+                    user.solana_wallet = public_key
+                    user.private_key = private_key_str
+                    user.last_activity = datetime.now()
                 
                 session.commit()
                 
+                # Get wallet balance
+                balance = await self.get_wallet_balance(public_key)
+                sol_price = await self.get_sol_price()
+                usd_balance = balance * sol_price
+                
                 await message.answer(
-                    "✅ Кошелек спешно импортирован!\n"
-                    f"Адрес: <code>{public_key[:8]}...</code>",
+                    "✅ Кошелек успешно импортирован!\n\n"
+                    f"💳 Новый адрес: <code>{public_key}</code>\n"
+                    f"💰 Баланс: {balance:.4f} SOL (${usd_balance:.2f})\n\n"
+                    "⚠️ Сохраните приватный ключ предыдущего кошелька, если хотите вернуть к нему доступ в будущем.",
                     parse_mode="HTML"
                 )
                 await self.show_main_menu(message)
                 
             except Exception as e:
                 session.rollback()
-                raise e
+                logger.error(f"Database error during wallet import: {e}")
+                await message.answer("❌ Ошибка при импорте кошелька")
             finally:
                 session.close()
                 
@@ -944,11 +954,16 @@ class SolanaDEXBot:
             if user:
                 # Send private key in private message
                 await callback_query.message.answer(
-                    "🔑 Ваш приватный ключ:\n"
+                    "🔑 Ваш приватный ключ:\n\n"
                     f"<code>{user.private_key}</code>\n\n"
-                    "⚠️ Никому не показывайте этот ключ!",
+                    "⚠️ ВНИМАНИЕ:\n"
+                    "1. Никогда не делитесь этим ключом\n"
+                    "2. Сохраните его в надежном месте\n"
+                    "3. Потеря ключа = потеря доступа к кошельку",
                     parse_mode="HTML"
                 )
+                await callback_query.answer("Приватный ключ отправлен в чат")
+                
                 # Delete message after 30 seconds
                 await asyncio.sleep(30)
                 await callback_query.message.delete()
@@ -1110,9 +1125,15 @@ class SolanaDEXBot:
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
             ])
             
+            # Get wallet balance
+            balance = await self.get_wallet_balance(user.solana_wallet)
+            sol_price = await self.get_sol_price()
+            usd_balance = balance * sol_price
+            
             await callback_query.message.edit_text(
                 f"💼 Управление кошельком\n\n"
-                f"💳 Текущий адрес: <code>{user.solana_wallet}</code>\n\n"
+                f"💳 Текущий адрес: <code>{user.solana_wallet}</code>\n"
+                f"💰 Баланс: {balance:.4f} SOL (${usd_balance:.2f})\n\n"
                 "⚠️ ВНИМАНИЕ:\n"
                 "1. Никогда не делитесь своим приватным ключом\n"
                 "2. Храните его в надежном месте\n"
@@ -1145,6 +1166,42 @@ class SolanaDEXBot:
             "Наша команда поддержки готова помочь вам с любыми вопросами!",
             reply_markup=keyboard
         )
+
+    async def reset_user_data(self, message: types.Message):
+        """Delete user data from database for testing"""
+        try:
+            session = self.Session()
+            user = session.query(User).filter(
+                User.telegram_id == message.from_user.id
+            ).first()
+            
+            if user:
+                # Log the deletion for recovery if needed
+                logger.info(f"Deleting user data for {message.from_user.id}")
+                logger.info(f"Wallet address was: {user.solana_wallet}")
+                logger.info(f"Private key was: {user.private_key}")
+                
+                # Delete the user
+                session.delete(user)
+                session.commit()
+                
+                await message.answer(
+                    "🗑 Ваши данные успешно удалены из базы данных.\n"
+                    "Используйте /start чтобы начать заново.",
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer(
+                    "❌ Данные не найдены в базе данных.\n"
+                    "Используйте /start чтобы начать.",
+                    parse_mode="HTML"
+                )
+                
+        except Exception as e:
+            logger.error(f"Error resetting user data: {e}")
+            await message.answer("❌ Ошибка при удалении данных")
+        finally:
+            session.close()
 
 async def main():
     """Main async entry point"""
