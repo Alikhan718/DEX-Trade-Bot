@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher, Router, BaseMiddleware
 from aiogram.types import TelegramObject
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, scoped_session
 
 from ..utils.config import Config
 from ..utils.logger import setup_logging
@@ -20,8 +20,8 @@ from .handlers import start, wallet, smart_money, help
 logger = setup_logging()
 
 class DatabaseMiddleware(BaseMiddleware):
-    def __init__(self, session_pool: sessionmaker):
-        self.session_pool = session_pool
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
         
     async def __call__(
         self,
@@ -29,17 +29,40 @@ class DatabaseMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any]
     ) -> Any:
-        async with self.get_session() as session:
-            data['session'] = session
-            return await handler(event, data)
-    
-    @asynccontextmanager
-    async def get_session(self):
-        session = self.session_pool()
+        session = self.session_factory()
+        data['session'] = session
         try:
-            yield session
+            result = await handler(event, data)
+            await self._commit_session(session)
+            return result
+        except Exception as e:
+            await self._rollback_session(session)
+            raise
         finally:
+            await self._close_session(session)
+    
+    @staticmethod
+    async def _commit_session(session):
+        try:
+            session.commit()
+        except Exception as e:
+            logger.error(f"Error committing session: {e}")
+            session.rollback()
+            raise
+    
+    @staticmethod
+    async def _rollback_session(session):
+        try:
+            session.rollback()
+        except Exception as e:
+            logger.error(f"Error rolling back session: {e}")
+    
+    @staticmethod
+    async def _close_session(session):
+        try:
             session.close()
+        except Exception as e:
+            logger.error(f"Error closing session: {e}")
 
 class ServicesMiddleware(BaseMiddleware):
     def __init__(self, solana_service: SolanaService, smart_money_tracker: SmartMoneyTracker):
@@ -70,9 +93,18 @@ class SolanaDEXBot:
             self.dp.include_router(self.router)
             
             # Initialize database
-            self.engine = create_engine(Config.DATABASE_URL)
+            self.engine = create_engine(
+                Config.DATABASE_URL,
+                pool_size=40,
+                max_overflow=10,
+                pool_pre_ping=True,
+                pool_recycle=3600
+            )
             Base.metadata.create_all(self.engine)
-            self.Session = sessionmaker(bind=self.engine)
+            
+            # Create scoped session factory
+            session_factory = sessionmaker(bind=self.engine)
+            self.Session = scoped_session(session_factory)
             
             # Initialize services
             self.solana_service = SolanaService()
@@ -109,9 +141,14 @@ class SolanaDEXBot:
         try:
             logger.info("Starting bot polling")
             await self.dp.start_polling(self.bot)
-        
         except Exception as e:
             logger.error(f"Bot polling error: {e}")
+        finally:
+            # Cleanup
+            if hasattr(self, 'Session'):
+                self.Session.remove()
+            if hasattr(self, 'engine'):
+                self.engine.dispose()
 
 async def main():
     """Main async entry point"""

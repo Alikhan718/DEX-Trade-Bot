@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from ...database.models import User
 from ...services.solana import SolanaService
 from solders.keypair import Keypair
+from .start import get_real_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +18,35 @@ router = Router()
 async def on_wallet_menu_button(callback_query: types.CallbackQuery, session, solana_service: SolanaService):
     """Handle wallet menu button press"""
     try:
+        # Get user ID from the callback query itself, not the message
+        user_id = get_real_user_id(callback_query)
+        logger.info(f"Processing wallet menu for user ID: {user_id}")
+        
+        # Log all existing users for debugging
+        all_users = session.query(User).all()
+        logger.info("Current users in database:")
+        for u in all_users:
+            logger.info(f"ID: {u.telegram_id}, Wallet: {u.solana_wallet}")
+        
         user = session.query(User).filter(
-            User.telegram_id == callback_query.from_user.id
+            User.telegram_id == user_id
         ).first()
         
         if not user:
+            # Also check the alternative ID format
+            alt_id = int(str(user_id).replace("bot", ""))
+            user = session.query(User).filter(
+                User.telegram_id == alt_id
+            ).first()
+            
+            if user:
+                # Update the ID to the current one
+                logger.info(f"Updating user ID from {user.telegram_id} to {user_id}")
+                user.telegram_id = user_id
+                session.commit()
+        
+        if not user:
+            logger.warning(f"No user found for ID {user_id}")
             await callback_query.message.edit_text(
                 "❌ Кошелек не найден. Используйте /start для создания.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -30,6 +55,7 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session, so
             )
             return
         
+        logger.info(f"Found user with wallet: {user.solana_wallet}")
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🔑 Показать приватный ключ", callback_data="show_private_key"),
@@ -68,8 +94,9 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session, so
 async def on_show_private_key_button(callback_query: types.CallbackQuery, session):
     """Handle show private key button press"""
     try:
+        user_id = get_real_user_id(callback_query)
         user = session.query(User).filter(
-            User.telegram_id == callback_query.from_user.id
+            User.telegram_id == user_id
         ).first()
         
         if user:
@@ -143,14 +170,15 @@ async def import_wallet(message: types.Message, session):
             return
         
         # Update database
+        user_id = get_real_user_id(message)
         user = session.query(User).filter(
-            User.telegram_id == message.from_user.id
+            User.telegram_id == user_id
         ).first()
         
         if not user:
             # Create new user if doesn't exist
             user = User(
-                telegram_id=message.from_user.id,
+                telegram_id=user_id,
                 solana_wallet=public_key,
                 private_key=private_key_str,  # Store original array string
                 referral_code=str(uuid.uuid4())[:8],
@@ -162,7 +190,7 @@ async def import_wallet(message: types.Message, session):
         else:
             # Store old wallet info in log for recovery if needed
             logger.info(
-                f"User {message.from_user.id} replacing wallet "
+                f"User {user_id} replacing wallet "
                 f"from {user.solana_wallet[:8]}... to {public_key[:8]}..."
             )
             

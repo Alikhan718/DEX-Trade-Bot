@@ -4,7 +4,7 @@ from datetime import datetime
 
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from ...database.models import User
 from ...services.solana import SolanaService
@@ -14,13 +14,79 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+def get_real_user_id(event: types.Message | CallbackQuery | types.Update) -> int:
+    """Get real user ID from any event type"""
+    logger.info(f"Getting real user ID from event type: {type(event)}")
+    
+    # If it's a callback query
+    if isinstance(event, CallbackQuery):
+        if event.from_user and event.from_user.id:
+            # Check if it's not a bot ID
+            user_id = event.from_user.id
+            if str(user_id).startswith('7871396830'):
+                logger.warning(f"Got bot ID {user_id}, trying to get real user ID")
+                if event.message and event.message.chat:
+                    user_id = event.message.chat.id
+                    logger.info(f"Using chat ID instead: {user_id}")
+            logger.info(f"Got user ID from callback_query.from_user: {user_id}")
+            return user_id
+        event = event.message  # Convert to message for further processing
+    
+    # If it's a message
+    if isinstance(event, types.Message):
+        # Try from_user first
+        if event.from_user and event.from_user.id:
+            # Check if it's not a bot ID
+            user_id = event.from_user.id
+            if str(user_id).startswith('7871396830'):
+                logger.warning(f"Got bot ID {user_id}, trying to get real user ID")
+                if event.chat:
+                    user_id = event.chat.id
+                    logger.info(f"Using chat ID instead: {user_id}")
+            logger.info(f"Got user ID from message.from_user: {user_id}")
+            return user_id
+        
+        # Try chat as fallback
+        if event.chat and event.chat.id:
+            user_id = event.chat.id
+            logger.info(f"Got user ID from message.chat: {user_id}")
+            return user_id
+    
+    # If we got here, we couldn't find a valid ID
+    logger.error(f"Could not determine user ID from event: {event}")
+    raise ValueError("Could not determine user ID")
+
 @router.message(Command("start"))
 async def show_main_menu(message: types.Message, session, solana_service: SolanaService):
     """Show main menu with wallet info"""
     try:
+        # Get real user ID
+        user_id = get_real_user_id(message)
+        logger.info(f"Processing start command for user ID: {user_id}")
+        
+        # Try to find user by any possible ID
         user = session.query(User).filter(
-            User.telegram_id == message.from_user.id
+            User.telegram_id == user_id
         ).first()
+        
+        if not user:
+            # Log all existing users for debugging
+            all_users = session.query(User).all()
+            logger.info("Current users in database:")
+            for u in all_users:
+                logger.info(f"ID: {u.telegram_id}, Wallet: {u.solana_wallet}")
+            
+            # Also check the alternative ID format
+            alt_id = int(str(user_id).replace("bot", ""))
+            user = session.query(User).filter(
+                User.telegram_id == alt_id
+            ).first()
+            
+            if user:
+                # Update the ID to the current one
+                logger.info(f"Updating user ID from {user.telegram_id} to {user_id}")
+                user.telegram_id = user_id
+                session.commit()
         
         if not user:
             # Generate new Solana wallet for new user
@@ -29,7 +95,7 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
             private_key = list(bytes(new_keypair))
             
             user = User(
-                telegram_id=message.from_user.id,
+                telegram_id=user_id,
                 solana_wallet=str(new_keypair.pubkey()),
                 private_key=str(private_key),  # Store as string representation of the array
                 referral_code=str(uuid.uuid4())[:8],
@@ -39,7 +105,7 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
             )
             session.add(user)
             session.commit()
-            logger.info(f"Created new wallet for user {message.from_user.id}: {user.solana_wallet}")
+            logger.info(f"Created new wallet for user {user_id}: {user.solana_wallet}")
             
             # Send welcome message for new users
             await message.answer(
@@ -105,13 +171,14 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
 async def reset_user_data(message: types.Message, session):
     """Delete user data from database for testing"""
     try:
+        user_id = get_real_user_id(message)
         user = session.query(User).filter(
-            User.telegram_id == message.from_user.id
+            User.telegram_id == user_id
         ).first()
         
         if user:
             # Log the deletion for recovery if needed
-            logger.info(f"Deleting user data for {message.from_user.id}")
+            logger.info(f"Deleting user data for {user_id}")
             logger.info(f"Wallet address was: {user.solana_wallet}")
             logger.info(f"Private key was: {user.private_key}")
             
@@ -139,4 +206,5 @@ async def reset_user_data(message: types.Message, session):
 async def on_main_menu_button(callback_query: types.CallbackQuery, session, solana_service: SolanaService):
     """Handle main menu button press"""
     await callback_query.answer()
+    # Pass the callback_query directly instead of message
     await show_main_menu(callback_query.message, session, solana_service) 
