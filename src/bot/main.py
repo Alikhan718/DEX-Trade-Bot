@@ -15,8 +15,9 @@ from ..database.models import Base
 from ..services.solana import SolanaService
 from ..services.smart_money import SmartMoneyTracker
 from ..services.token_info import TokenInfoService
+from ..services.rugcheck import RugCheckService
 
-from .handlers import start, wallet, smart_money, help, buy
+from .handlers import start, wallet, smart_money, help, buy, rugcheck
 
 logger = setup_logging()
 
@@ -66,10 +67,10 @@ class DatabaseMiddleware(BaseMiddleware):
             logger.error(f"Error closing session: {e}")
 
 class ServicesMiddleware(BaseMiddleware):
-    def __init__(self, solana_service: SolanaService, smart_money_tracker: SmartMoneyTracker, token_info_service: TokenInfoService):
+    def __init__(self, solana_service: SolanaService, smart_money_tracker: SmartMoneyTracker, rugcheck_service: RugCheckService):
         self.solana_service = solana_service
         self.smart_money_tracker = smart_money_tracker
-        self.token_info_service = token_info_service
+        self.rugcheck_service = rugcheck_service
         
     async def __call__(
         self,
@@ -77,9 +78,11 @@ class ServicesMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any]
     ) -> Any:
-        data['solana_service'] = self.solana_service
-        data['smart_money_tracker'] = self.smart_money_tracker
-        data['token_info_service'] = self.token_info_service
+        # Add services to handler data
+        data["solana_service"] = self.solana_service
+        data["smart_money_tracker"] = self.smart_money_tracker
+        data["rugcheck_service"] = self.rugcheck_service
+        
         return await handler(event, data)
 
 class SolanaDEXBot:
@@ -91,35 +94,35 @@ class SolanaDEXBot:
             self.storage = MemoryStorage()
             self.dp = Dispatcher(storage=self.storage)
             
-            # Initialize router
-            self.router = Router()
-            self.dp.include_router(self.router)
+            # Initialize services
+            self.solana_service = SolanaService()
+            self.smart_money_tracker = SmartMoneyTracker()
+            self.rugcheck_service = RugCheckService()
             
-            # Initialize database
+            # Setup database
             self.engine = create_engine(
                 Config.DATABASE_URL,
-                pool_size=40,
+                pool_size=20,
                 max_overflow=10,
                 pool_pre_ping=True,
                 pool_recycle=3600
             )
             Base.metadata.create_all(self.engine)
+            self.Session = scoped_session(sessionmaker(bind=self.engine))
             
-            # Create scoped session factory
-            session_factory = sessionmaker(bind=self.engine)
-            self.Session = scoped_session(session_factory)
+            # Register middlewares
+            self.dp.message.middleware(DatabaseMiddleware(self.Session))
+            self.dp.callback_query.middleware(DatabaseMiddleware(self.Session))
             
-            # Initialize services
-            self.solana_service = SolanaService()
-            self.smart_money_tracker = SmartMoneyTracker()
-            self.token_info_service = TokenInfoService()
-            
-            # Setup middlewares
-            self.dp.update.outer_middleware(DatabaseMiddleware(self.Session))
-            self.dp.update.outer_middleware(ServicesMiddleware(
+            self.dp.message.middleware(ServicesMiddleware(
                 self.solana_service,
                 self.smart_money_tracker,
-                self.token_info_service
+                self.rugcheck_service
+            ))
+            self.dp.callback_query.middleware(ServicesMiddleware(
+                self.solana_service,
+                self.smart_money_tracker,
+                self.rugcheck_service
             ))
             
             # Register handlers
@@ -130,7 +133,7 @@ class SolanaDEXBot:
         except Exception as e:
             logger.error(f"Failed to initialize bot: {e}")
             raise
-    
+        
     def _register_handlers(self):
         """Register message and callback handlers"""
         # Include routers from handler modules
@@ -138,7 +141,8 @@ class SolanaDEXBot:
         self.dp.include_router(wallet.router)
         self.dp.include_router(smart_money.router)
         self.dp.include_router(help.router)
-        self.dp.include_router(buy.router)  # Добавляем новый роутер
+        self.dp.include_router(buy.router)
+        self.dp.include_router(rugcheck.router)
         
         logger.info("Handlers registered successfully")
         
@@ -151,11 +155,18 @@ class SolanaDEXBot:
             logger.error(f"Bot polling error: {e}")
         finally:
             # Cleanup
+            if hasattr(self, 'rugcheck_service'):
+                await self.rugcheck_service.close()
             if hasattr(self, 'Session'):
                 self.Session.remove()
             if hasattr(self, 'engine'):
                 self.engine.dispose()
             
+            # Close all RPC clients
+            if hasattr(self, 'smart_money_tracker'):
+                for client in self.smart_money_tracker.rpc_clients:
+                    await client.close()
+
 async def main():
     """Main async entry point"""
     try:

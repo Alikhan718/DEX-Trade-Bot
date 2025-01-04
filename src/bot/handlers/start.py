@@ -142,14 +142,18 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
                 InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
                 InlineKeyboardButton(text="📈 Открытые Позиции", callback_data="open_positions")
             ],
-            # Wallet and settings
+            # Security and wallet
             [
-                InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu"),
-                InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")
+                InlineKeyboardButton(text="🛡️ Проверка на скам", callback_data="rugcheck"),
+                InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu")
             ],
-            # Help and referral
+            # Settings and help
             [
-                InlineKeyboardButton(text="❓ Помощь", callback_data="help"),
+                InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+                InlineKeyboardButton(text="❓ Помощь", callback_data="help")
+            ],
+            # Referral
+            [
                 InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral")
             ]
         ])

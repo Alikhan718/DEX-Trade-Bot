@@ -43,7 +43,7 @@ class SmartMoneyTracker:
         self.cache_ttl = 300
         self.delay_between_requests = 1.0
         self.max_retries = 3  # Максимальное количество попыток для каждого RPC
-        
+
     async def _get_next_rpc_client(self):
         """Gets the next available RPC client"""
         self.current_rpc_index = (self.current_rpc_index + 1) % len(self.rpc_clients)

@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 class SolanaService:
     def __init__(self):
         """Initialize Solana service"""
-        self.client = AsyncClient(Config.SOLANA_RPC_URL)
+        self.rpc_urls = Config.SOLANA_RPC_URLS
+        self.current_rpc_url = Config.SOLANA_RPC_URL
+        self.connection = AsyncClient(self.current_rpc_url)
         self.sol_price = 0
         self.last_price_update = None
         self.price_update_interval = 300  # 5 minutes in seconds
@@ -45,7 +47,7 @@ class SolanaService:
         """Get wallet SOL balance"""
         try:
             pubkey = PublicKey.from_string(wallet_address)
-            response = await self.client.get_balance(pubkey)
+            response = await self.connection.get_balance(pubkey)
             if response.value is not None:
                 return response.value / 1e9  # Convert lamports to SOL
             return 0
