@@ -4,6 +4,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import asyncio
 
 from ...services.smart_money import SmartMoneyTracker
 
@@ -15,40 +16,82 @@ smart_money_tracker = SmartMoneyTracker()
 class SmartMoneyStates(StatesGroup):
     waiting_for_token = State()
 
+def _is_valid_token_address(address: str) -> bool:
+    """Проверяет валидность адреса токена"""
+    try:
+        # Проверяем длину адреса
+        if len(address) != 44:
+            return False
+            
+        # Проверяем, что адрес содержит только допустимые символы
+        valid_chars = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+        return all(c in valid_chars for c in address)
+        
+    except Exception:
+        return False
+
 @router.message(Command("smart"))
 async def handle_smart_money_command(message: types.Message):
     """Обработчик команды для получения smart money информации"""
     try:
         # Извлекаем адрес токена из сообщения
-        token_address = message.text.split()[1]
+        parts = message.text.split()
+        if len(parts) < 2:
+            await message.reply(
+                "❌ Пожалуйста, укажите адрес токена после команды\n"
+                "Пример: `/smart HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
+                parse_mode="MARKDOWN"
+            )
+            return
+            
+        token_address = parts[1]
         
         # Проверяем валидность адреса
         if not _is_valid_token_address(token_address):
-            await message.reply("❌ Неверный адрес токена")
+            await message.reply(
+                "❌ Неверный адрес токена\n"
+                "Пожалуйста, проверьте адрес и попробуйте снова"
+            )
             return
             
         # Отправляем сообщение о начале поиска
-        status_message = await message.reply("🔍 Получаем информацию о smart money...")
-        
-        # Получаем имя токена (можно реализовать отдельный метод)
-        token_name = await _get_token_name(token_address)
-        
-        # Получаем и форматируем информацию
-        smart_money_info = await smart_money_tracker.format_smart_money_message(
-            token_address,
-            token_name
+        status_message = await message.reply(
+            "🔍 Анализируем токен и получаем информацию о трейдерах...\n"
+            "Это может занять несколько секунд"
         )
         
-        # Обновляем сообщение с результатами
-        await status_message.edit_text(
-            smart_money_info,
-            parse_mode="MARKDOWN",
-            disable_web_page_preview=True
-        )
-        
+        try:
+            # Получаем анализ токена с таймаутом
+            metadata, traders = await asyncio.wait_for(
+                smart_money_tracker.get_token_analysis(token_address),
+                timeout=60  # 60 секунд таймаут
+            )
+            
+            # Форматируем и отправляем результат
+            result_message = smart_money_tracker.format_smart_money_message(metadata, traders)
+            
+            await status_message.edit_text(
+                result_message,
+                parse_mode="MARKDOWN",
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            
+        except asyncio.TimeoutError:
+            await status_message.edit_text(
+                "❌ Превышено время ожидания при анализе токена\n"
+                "Пожалуйста, попробуйте позже"
+            )
+            return
+            
     except Exception as e:
         logger.error(f"Ошибка при получении smart money: {e}")
-        await message.reply("❌ Произошла ошибка при получении информации о smart money")
+        await message.reply(
+            "❌ Произошла ошибка при анализе токена\n"
+            "Пожалуйста, попробуйте позже или проверьте адрес токена"
+        )
 
 @router.callback_query(lambda c: c.data == "smart_money")
 async def on_smart_money_button(callback_query: types.CallbackQuery, state: FSMContext):
@@ -56,7 +99,9 @@ async def on_smart_money_button(callback_query: types.CallbackQuery, state: FSMC
     try:
         await callback_query.message.edit_text(
             "🧠 Smart Money Анализ\n\n"
-            "Пожалуйста, отправьте адрес токен для анализа:",
+            "Отправьте адрес токена для анализа.\n"
+            "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
+            parse_mode="MARKDOWN",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
             ])
@@ -86,17 +131,19 @@ async def handle_token_address_input(message: types.Message, state: FSMContext):
         # Reset state
         await state.clear()
         
-        # Process the smart money analysis
-        status_message = await message.reply("🔍 Получаем информацию о smart money...")
-        
-        token_name = await _get_token_name(token_address)
-        smart_money_info = await smart_money_tracker.format_smart_money_message(
-            token_address,
-            token_name
+        # Send processing message
+        status_message = await message.reply(
+            "🔍 Анализируем токен и получаем информацию о трейдерах...\n"
+            "Это может занять несколько секунд"
         )
         
+        # Get and format analysis
+        metadata, traders = await smart_money_tracker.get_token_analysis(token_address)
+        result_message = smart_money_tracker.format_smart_money_message(metadata, traders)
+        
+        # Send results
         await status_message.edit_text(
-            smart_money_info,
+            result_message,
             parse_mode="MARKDOWN",
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -106,31 +153,9 @@ async def handle_token_address_input(message: types.Message, state: FSMContext):
         
     except Exception as e:
         logger.error(f"Error processing token address: {e}")
-        await message.reply("❌ Произошла ошибка при анализе токена")
+        await message.reply(
+            "❌ Произошла ошибка при анализе токена\n"
+            "Пожалуйста, попробуйте позже или проверьте адрес токена"
+        )
         await state.clear()
-
-def _is_valid_token_address(address: str) -> bool:
-    """Проверяет валидность адреса токена"""
-    try:
-        # Проверяем длину и формат base58
-        if len(address) != 44 or not all(c in '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz' for c in address):
-            return False
-            
-        # Пробуем создать PublicKey из адреса
-        from solders.pubkey import Pubkey as PublicKey
-        PublicKey.from_string(address)
-        return True
-        
-    except Exception as e:
-        logger.error(f"Token address validation error: {e}")
-        return False
-
-async def _get_token_name(token_address: str) -> str:
-    """Получает имя токена по адресу"""
-    try:
-        # Здесь должна быть логика получения имени токена
-        # Пока возвращаем заглушку
-        return "Unknown Token"
-    except Exception as e:
-        logger.error(f"Error getting token name: {e}")
-        return "Unknown Token" 
+ 

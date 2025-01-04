@@ -14,8 +14,9 @@ from ..utils.logger import setup_logging
 from ..database.models import Base
 from ..services.solana import SolanaService
 from ..services.smart_money import SmartMoneyTracker
+from ..services.token_info import TokenInfoService
 
-from .handlers import start, wallet, smart_money, help
+from .handlers import start, wallet, smart_money, help, buy
 
 logger = setup_logging()
 
@@ -65,9 +66,10 @@ class DatabaseMiddleware(BaseMiddleware):
             logger.error(f"Error closing session: {e}")
 
 class ServicesMiddleware(BaseMiddleware):
-    def __init__(self, solana_service: SolanaService, smart_money_tracker: SmartMoneyTracker):
+    def __init__(self, solana_service: SolanaService, smart_money_tracker: SmartMoneyTracker, token_info_service: TokenInfoService):
         self.solana_service = solana_service
         self.smart_money_tracker = smart_money_tracker
+        self.token_info_service = token_info_service
         
     async def __call__(
         self,
@@ -77,6 +79,7 @@ class ServicesMiddleware(BaseMiddleware):
     ) -> Any:
         data['solana_service'] = self.solana_service
         data['smart_money_tracker'] = self.smart_money_tracker
+        data['token_info_service'] = self.token_info_service
         return await handler(event, data)
 
 class SolanaDEXBot:
@@ -109,12 +112,14 @@ class SolanaDEXBot:
             # Initialize services
             self.solana_service = SolanaService()
             self.smart_money_tracker = SmartMoneyTracker()
+            self.token_info_service = TokenInfoService()
             
             # Setup middlewares
             self.dp.update.outer_middleware(DatabaseMiddleware(self.Session))
             self.dp.update.outer_middleware(ServicesMiddleware(
                 self.solana_service,
-                self.smart_money_tracker
+                self.smart_money_tracker,
+                self.token_info_service
             ))
             
             # Register handlers
@@ -133,9 +138,10 @@ class SolanaDEXBot:
         self.dp.include_router(wallet.router)
         self.dp.include_router(smart_money.router)
         self.dp.include_router(help.router)
+        self.dp.include_router(buy.router)  # Добавляем новый роутер
         
         logger.info("Handlers registered successfully")
-
+        
     async def start(self):
         """Start the bot polling"""
         try:
@@ -149,7 +155,7 @@ class SolanaDEXBot:
                 self.Session.remove()
             if hasattr(self, 'engine'):
                 self.engine.dispose()
-
+            
 async def main():
     """Main async entry point"""
     try:

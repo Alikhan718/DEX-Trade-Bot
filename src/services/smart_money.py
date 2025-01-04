@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from solana.rpc.async_api import AsyncClient
@@ -11,6 +11,20 @@ from solders.signature import Signature
 from ..utils.config import Config
 
 logger = logging.getLogger(__name__)
+
+# Обновляем список RPC эндпоинтов
+BACKUP_RPC_URLS = [
+    "https://api.mainnet-beta.solana.com",
+    "https://solana-api.projectserum.com",
+    "https://api.metaplex.solana.com",
+    "https://api.devnet.solana.com",
+]
+
+@dataclass
+class TokenMetadata:
+    name: str
+    symbol: str
+    address: str
 
 @dataclass
 class SmartTrader:
@@ -23,219 +37,199 @@ class SmartTrader:
 class SmartMoneyTracker:
     def __init__(self):
         """Initialize smart money tracker"""
-        self.rpc_clients = [AsyncClient(url) for url in Config.SOLANA_RPC_URLS]
+        self.rpc_clients = [AsyncClient(url) for url in BACKUP_RPC_URLS]
         self.current_rpc_index = 0
         self.cache = {}
         self.cache_ttl = 300
-        self.delay_between_requests = 1.0  # 1 second delay between requests
+        self.delay_between_requests = 1.0
+        self.max_retries = 3  # Максимальное количество попыток для каждого RPC
         
     async def _get_next_rpc_client(self):
         """Gets the next available RPC client"""
         self.current_rpc_index = (self.current_rpc_index + 1) % len(self.rpc_clients)
-        logger.info(f"Switching to RPC endpoint: {Config.SOLANA_RPC_URLS[self.current_rpc_index]}")
         return self.rpc_clients[self.current_rpc_index]
 
-    async def _fetch_token_transactions(self, token_address: str) -> List[Dict]:
-        """Fetches all transactions for a token with improved error handling"""
-        transactions = []
-        try:
-            logger.info(f"Fetching transactions for token: {token_address}")
-            
-            # Try each RPC endpoint until we get a successful response
-            response = None
-            for i, client in enumerate(self.rpc_clients):
+    async def _make_rpc_request(self, method: str, *args, **kwargs) -> Optional[Dict]:
+        """Делает RPC запрос с обработкой ошибок и ротацией эндпоинтов"""
+        for _ in range(self.max_retries):
+            for client in self.rpc_clients:
                 try:
-                    response = await client.get_signatures_for_address(
-                        PublicKey.from_string(token_address),
-                        limit=5
-                    )
-                    if response and response.value:
-                        self.current_rpc_index = i
-                        break
-                except Exception as e:
-                    logger.warning(f"Failed to get signatures from RPC endpoint {i}: {e}")
-                    await asyncio.sleep(1)
-            
-            if not response or not response.value:
-                logger.warning("No transactions found for token after trying all RPC endpoints")
-                return []
-            
-            for sig_info in response.value[:3]:
-                try:
-                    signature = sig_info.signature
-                    logger.info(f"Processing signature: {str(signature)}")
+                    method_to_call = getattr(client, method)
+                    response = await method_to_call(*args, **kwargs)
                     
-                    # Add delay between requests
+                    if response and hasattr(response, 'value'):
+                        return response
+                        
+                except Exception as e:
+                    logger.debug(f"RPC request failed for {client._provider.endpoint_uri}: {str(e)}")
                     await asyncio.sleep(self.delay_between_requests)
-                    
-                    # Try each RPC endpoint for transaction data
-                    tx_data = None
-                    for i, client in enumerate(self.rpc_clients):
-                        try:
-                            tx_response = await client.get_transaction(
-                                signature,
-                                encoding="jsonParsed",
-                                max_supported_transaction_version=0
-                            )
-                            
-                            if tx_response and tx_response.value:
-                                tx_data = self._extract_transaction_data(tx_response.value, signature)
-                                if tx_data:
-                                    transactions.append(tx_data)
-                                    logger.info(f"Successfully processed transaction {str(signature)[:8]}")
-                                    break
-                                
-                        except Exception as e:
-                            logger.warning(f"Failed to get transaction from RPC endpoint {i}: {e}")
-                            await asyncio.sleep(1)
-                    
-                    if not tx_data:
-                        logger.error(f"Failed to process transaction {signature[:8]} after trying all RPC endpoints")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing signature {str(signature)}: {e}")
                     continue
             
-            logger.info(f"Successfully processed {len(transactions)} transactions")
-            return transactions
+            # Если все эндпоинты не сработали, увеличиваем задержку
+            self.delay_between_requests *= 2
             
-        except Exception as e:
-            logger.error(f"Error fetching token transactions: {e}", exc_info=True)
-            return []
+        return None
 
-    def _extract_transaction_data(self, tx_value, signature: str) -> Optional[Dict]:
+    async def _fetch_token_transactions(self, token_address: str) -> List[Dict]:
+        """Fetches all transactions for a token"""
+        transactions = []
+        max_transactions = 100  # Увеличиваем лимит транзакций
+        max_attempts = 3  # Максимальное количество попыток
+        attempt = 0
+        
+        try:
+            while attempt < max_attempts:
+                # Получаем подписи транзакций
+                response = await self._make_rpc_request(
+                    'get_signatures_for_address',
+                    PublicKey.from_string(token_address),
+                    limit=max_transactions
+                )
+                
+                if not response or not response.value:
+                    logger.warning(f"No signatures found for token {token_address} after attempt {attempt + 1}")
+                    attempt += 1
+                    continue
+                
+                # Если нашли подписи, обрабатываем их
+                signatures_found = False
+                for sig_info in response.value[:max_transactions]:
+                    try:
+                        signature = str(sig_info.signature)
+                        logger.debug(f"Processing transaction {signature}")
+                        
+                        # Получаем транзакцию
+                        tx_response = await self._make_rpc_request(
+                            'get_transaction',
+                            Signature.from_string(signature)
+                        )
+                        
+                        if tx_response and tx_response.value:
+                            signatures_found = True
+                            tx_data = self._extract_transaction_data(tx_response.value, signature)
+                            if tx_data:
+                                transactions.append(tx_data)
+                                if len(transactions) >= 20:  # Останавливаемся после 20 успешных транзакций
+                                    return transactions
+                                
+                    except Exception as e:
+                        logger.debug(f"Failed to process transaction {signature}: {str(e)}")
+                        continue
+                
+                # Если нашли хотя бы одну подпись, прерываем цикл
+                if signatures_found:
+                    break
+                    
+                attempt += 1
+                
+            logger.info(f"Finished fetching transactions. Found: {len(transactions)}")
+            return transactions
+                    
+        except Exception as e:
+            logger.error(f"Failed to fetch transactions: {str(e)}")
+            return transactions
+
+    def _extract_transaction_data(self, tx_value: Dict, signature: str) -> Optional[Dict]:
         """Extracts relevant data from transaction"""
         try:
-            # Create base transaction data structure
+            # Extract basic transaction data
             tx_data = {
-                'signature': str(signature),
-                'block_time': getattr(tx_value, 'block_time', None),
-                'data': {
-                    'transaction': {
-                        'message': {
-                            'account_keys': []
-                        }
-                    },
-                    'meta': {
-                        'pre_balances': [],
-                        'post_balances': []
-                    }
-                }
+                'signature': signature,
+                'block_time': getattr(tx_value, 'blockTime', None),
+                'accounts': [],
+                'pre_balances': [],
+                'post_balances': []
             }
             
-            # Extract account keys - handle different response structures
-            account_keys = []
+            # Extract accounts
+            if hasattr(tx_value, 'transaction'):
+                tx = tx_value.transaction
+                if hasattr(tx, 'message'):
+                    message = tx.message
+                    if hasattr(message, 'accountKeys'):
+                        tx_data['accounts'] = [str(key) for key in message.accountKeys]
             
-            # Try to get account keys from compiled message
-            if hasattr(tx_value, 'transaction') and hasattr(tx_value.transaction, 'message'):
-                message = tx_value.transaction.message
-                if hasattr(message, 'accountKeys'):
-                    account_keys = message.accountKeys
-                elif hasattr(message, 'account_keys'):
-                    account_keys = message.account_keys
-                    
-            # Try to get from legacy format
-            if not account_keys and hasattr(tx_value, 'message'):
-                if hasattr(tx_value.message, 'accountKeys'):
-                    account_keys = tx_value.message.accountKeys
-                elif hasattr(tx_value.message, 'account_keys'):
-                    account_keys = tx_value.message.account_keys
-            
-            # Try to get from transaction accounts
-            if not account_keys and hasattr(tx_value, 'transaction'):
-                if hasattr(tx_value.transaction, 'accounts'):
-                    account_keys = tx_value.transaction.accounts
-            
-            # Convert account keys to strings
-            if account_keys:
-                tx_data['data']['transaction']['message']['account_keys'] = [
-                    str(key) for key in account_keys
-                ]
-                logger.info(f"Successfully extracted {len(account_keys)} account keys")
-            else:
-                logger.warning(f"No account keys found in transaction {signature[:8]}")
-                # Dump transaction structure for debugging
-                logger.debug(f"Transaction structure: {dir(tx_value)}")
-                if hasattr(tx_value, 'transaction'):
-                    logger.debug(f"Transaction message structure: {dir(tx_value.transaction)}")
-                return None
-            
-            # Extract balances from meta
+            # Extract balances
             if hasattr(tx_value, 'meta'):
                 meta = tx_value.meta
                 if hasattr(meta, 'preBalances'):
-                    tx_data['data']['meta']['pre_balances'] = list(meta.preBalances)
-                elif hasattr(meta, 'pre_balances'):
-                    tx_data['data']['meta']['pre_balances'] = list(meta.pre_balances)
-                
+                    tx_data['pre_balances'] = list(meta.preBalances)
                 if hasattr(meta, 'postBalances'):
-                    tx_data['data']['meta']['post_balances'] = list(meta.postBalances)
-                elif hasattr(meta, 'post_balances'):
-                    tx_data['data']['meta']['post_balances'] = list(meta.post_balances)
+                    tx_data['post_balances'] = list(meta.postBalances)
             
-            return tx_data
+            return tx_data if tx_data['accounts'] and tx_data['pre_balances'] else None
             
         except Exception as e:
-            logger.error(f"Error extracting transaction data for {signature[:8]}: {e}")
+            logger.debug(f"Error extracting transaction data: {str(e)}")
             return None
 
-    async def _analyze_trader_transactions(self, transactions: List[Dict]) -> Dict[str, SmartTrader]:
-        """Analyzes transactions with improved error handling"""
+    async def _analyze_trader_transactions(self, transactions: List[Dict]) -> List[SmartTrader]:
+        """Analyzes transactions to find smart money traders"""
         traders = {}
-        try:
-            logger.info(f"Starting analysis of {len(transactions)} transactions")
-            
-            for tx in transactions:
-                try:
-                    account_keys = tx['data']['transaction']['message'].get('account_keys', [])
-                    if not account_keys:
-                        continue
-                    
-                    sender = account_keys[0]
-                    timestamp = datetime.fromtimestamp(tx['block_time']) if tx.get('block_time') else datetime.now()
-                    
-                    pre_balances = tx['data']['meta'].get('pre_balances', [])
-                    post_balances = tx['data']['meta'].get('post_balances', [])
-                    
-                    if pre_balances and post_balances:
-                        balance_change = (post_balances[0] - pre_balances[0]) / 1e9
-                        logger.info(f"Balance change for {sender[:8]}: {balance_change} SOL")
-                        
-                        if sender not in traders:
-                            traders[sender] = SmartTrader(
-                                wallet_address=sender,
-                                profit_usd=0.0,
-                                roi_percentage=0.0,
-                                first_trade_time=timestamp,
-                                token_trades_count=0
-                            )
-                        
-                        traders[sender].token_trades_count += 1
-                        
-                        # Calculate profit (using simplified logic for now)
-                        if traders[sender].profit_usd == 0:
-                            import random
-                            base_profit = abs(balance_change) * 100
-                            traders[sender].profit_usd = base_profit * random.uniform(1.5, 5.0)
-                            traders[sender].roi_percentage = random.uniform(100, 1000)
-                            logger.info(f"Calculated profit for {sender[:8]}: ${traders[sender].profit_usd:.2f}")
-                    
-                except Exception as e:
-                    logger.error(f"Error analyzing transaction: {e}")
+        sol_price = 20  # Примерная цена SOL в USD
+        
+        for tx in transactions:
+            try:
+                if not tx.get('accounts') or not tx.get('pre_balances') or not tx.get('post_balances'):
                     continue
-            
-            logger.info(f"Analysis complete. Found {len(traders)} traders")
-            return traders
-            
-        except Exception as e:
-            logger.error(f"Error in transaction analysis: {e}")
-            return {}
+                
+                if len(tx['pre_balances']) != len(tx['post_balances']) or not tx['pre_balances']:
+                    continue
+                
+                # Get trader address (first account in transaction)
+                trader_address = tx['accounts'][0]
+                timestamp = datetime.fromtimestamp(tx['block_time']) if tx.get('block_time') else datetime.now()
+                
+                # Calculate balance change
+                pre_balance = float(tx['pre_balances'][0]) / 1e9  # Convert lamports to SOL
+                post_balance = float(tx['post_balances'][0]) / 1e9
+                balance_change = post_balance - pre_balance
+                
+                # Skip very small changes
+                if abs(balance_change) < 0.001:
+                    continue
+                
+                # Update or create trader stats
+                if trader_address not in traders:
+                    traders[trader_address] = SmartTrader(
+                        wallet_address=trader_address,
+                        profit_usd=0.0,
+                        roi_percentage=0.0,
+                        first_trade_time=timestamp,
+                        token_trades_count=0
+                    )
+                
+                trader = traders[trader_address]
+                trader.token_trades_count += 1
+                
+                # Calculate USD value
+                usd_change = balance_change * sol_price
+                trader.profit_usd += usd_change
+                
+                # Calculate ROI
+                if trader.token_trades_count > 1:
+                    initial_value = abs(usd_change)
+                    if initial_value > 0:
+                        trader.roi_percentage = (trader.profit_usd / initial_value) * 100
+                
+            except Exception as e:
+                logger.debug(f"Error analyzing transaction: {str(e)}")
+                continue
+        
+        # Sort traders by absolute profit value
+        sorted_traders = sorted(
+            traders.values(),
+            key=lambda x: abs(x.profit_usd),
+            reverse=True
+        )[:20]  # Увеличиваем до топ-20
+        
+        return sorted_traders
 
-    async def get_token_traders(self, token_address: str) -> List[SmartTrader]:
-        """Получает список самых прибыльных трейдеров для указанного токена"""
+    async def get_token_analysis(self, token_address: str) -> Tuple[TokenMetadata, List[SmartTrader]]:
+        """Gets token metadata and top traders"""
         try:
-            # Проверяем кэш
-            cache_key = f"traders_{token_address}"
+            # Check cache
+            cache_key = f"analysis_{token_address}"
             current_time = datetime.now().timestamp()
             
             if cache_key in self.cache:
@@ -243,56 +237,64 @@ class SmartMoneyTracker:
                 if current_time - cache_time < self.cache_ttl:
                     return cached_data
             
-            # Если нет в кэше или устарел, получаем новые данные
-            transactions = await self._fetch_token_transactions(token_address)
-            trader_stats = await self._analyze_trader_transactions(transactions)
-            
-            top_traders = sorted(
-                trader_stats.values(),
-                key=lambda x: x.profit_usd,
-                reverse=True
-            )[:10]
-            
-            # Сохраняем в кэш
-            self.cache[cache_key] = (top_traders, current_time)
-            
-            return top_traders
-            
-        except Exception as e:
-            logger.error(f"Ошибка при получении smart money для {token_address}: {e}")
-            return []
-
-    async def format_smart_money_message(self, token_address: str, token_name: str) -> str:
-        """Форматирует сообщение со списком smart money"""
-        traders = await self.get_token_traders(token_address)
-        
-        if not traders:
-            return "❌ Не удалось получить информацию о smart money для данного токена"
-            
-        message = [
-            f"💰 {token_name} ({token_address[:8]}...{token_address[-4:]}) Smart Money информация\n",
-            f"`{token_address}`\n",
-            "\nТоп адреса: Прибыль (ROI)"
-        ]
-        
-        for trader in traders:
-            short_address = f"{trader.wallet_address[:4]}...{trader.wallet_address[-4:]}"
-            profit_formatted = self._format_money(trader.profit_usd)
-            
-            message.append(
-                f"[{short_address}](http://t.me/{Config.BOT_USERNAME}?start=smart-{trader.wallet_address}): "
-                f"${profit_formatted} ({trader.roi_percentage:.2f}%)"
+            # Get fresh data
+            metadata = TokenMetadata(
+                name="Unknown Token",  # Используем Unknown Token вместо хардкода
+                symbol="???",
+                address=token_address
             )
             
-        message.append("\nНажмите на адрес Smart Money для просмотра детальной информации о прибыли")
+            transactions = await self._fetch_token_transactions(token_address)
+            if not transactions:
+                logger.warning("No transactions found for analysis")
+                return metadata, []
+                
+            top_traders = await self._analyze_trader_transactions(transactions)
+            
+            # Cache results
+            result = (metadata, top_traders)
+            self.cache[cache_key] = (result, current_time)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting token analysis: {str(e)}")
+            return TokenMetadata(
+                name="Error",
+                symbol="ERR",
+                address=token_address
+            ), []
+
+    def format_smart_money_message(self, metadata: TokenMetadata, traders: List[SmartTrader]) -> str:
+        """Форматирует сообщение с результатами анализа"""
+        lines = [
+            f"🔍️ 📈 - ({metadata.name}) Smart Money information",
+            f"`{metadata.address}`\n",
+            "*Top Addresses: Profit (ROI)*"
+        ]
         
-        return "\n".join(message)
+        if not traders:
+            lines.append("_No trader data available_")
+        else:
+            for trader in traders:
+                wallet = f"{trader.wallet_address[:4]}...{trader.wallet_address[-4:]}"
+                profit = self._format_money(abs(trader.profit_usd))
+                roi = f"{trader.roi_percentage:.2f}%"
+                
+                if trader.profit_usd >= 0:
+                    lines.append(f"`{wallet}`  : ${profit} ({roi})")
+                else:
+                    lines.append(f"`{wallet}`  : $-{profit} ({roi})")
+        
+        return "\n".join(lines)
 
     @staticmethod
     def _format_money(amount: float) -> str:
         """Форматирует денежную сумму в читаемый вид"""
         if amount >= 1_000_000:
-            return f"{amount/1_000_000:.1f}M"
+            return f"{amount/1_000_000:.2f}M"
         elif amount >= 1_000:
             return f"{amount/1_000:.1f}K"
-        return f"{amount:.1f}" 
+        elif amount >= 1:
+            return f"{amount:.2f}"
+        return f"{amount:.2f}" 
