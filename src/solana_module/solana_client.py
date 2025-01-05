@@ -20,6 +20,7 @@ from solana.transaction import Transaction
 import spl.token.instructions as spl_token
 from spl.token.instructions import get_associated_token_address
 from construct import Struct, Int64ul, Flag
+from .utils import get_bonding_curve_address, find_associated_bonding_curve
 
 from tenacity import (
     retry,
@@ -345,7 +346,7 @@ class SolanaClient:
         """
         logger.info(f"Получение токенов для аккаунта: {account_pubkey}")
         response = await send_request_with_rate_limit(self.client, self.client.get_token_accounts_by_owner, account_pubkey, TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM))
-        print(response)
+        #pipip
         if not response.value:
             logger.info("Токены для этого аккаунта не найдены.")
             return []
@@ -359,6 +360,21 @@ class SolanaClient:
                 tokens.append(token_pubkey)
         logger.info(f"Найдено {len(tokens)} токенов для аккаунта {account_pubkey}")
         return tokens
+    
+    def derive_event_authority_pda(self, bonding_curve: Pubkey, mint: Pubkey) -> Pubkey:
+        """
+        Деривирует PDA для event_authority с использованием сидов.
+        """
+        seeds = [
+            b"event_authority",  # Пример сидов, замените на реальные
+            bytes(bonding_curve),
+            bytes(mint)
+        ]
+        event_authority_pda, bump = Pubkey.find_program_address(
+            seeds,
+            self.PUMP_PROGRAM
+        )
+        return event_authority_pda
 
     @retry(
         retry=retry_if_exception(is_rate_limit_error),
@@ -379,41 +395,47 @@ class SolanaClient:
             AccountMeta(pubkey=params['associated_token_account'], is_signer=False, is_writable=True),
             AccountMeta(pubkey=self.payer.pubkey(), is_signer=True, is_writable=True),
             AccountMeta(pubkey=self.SYSTEM_PROGRAM, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=self.SYSTEM_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM, is_signer=False, is_writable=False),
             AccountMeta(pubkey=self.SYSTEM_TOKEN_PROGRAM, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=self.SYSTEM_RENT, is_signer=False, is_writable=False),
             AccountMeta(pubkey=self.PUMP_EVENT_AUTHORITY, is_signer=False, is_writable=False),
             AccountMeta(pubkey=self.PUMP_PROGRAM, is_signer=False, is_writable=False),
         ]
 
         # Замените на правильный дискриминатор для продажи
-        discriminator = struct.pack("<Q", 12345678901234567890)  
-        token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10**6))
-        min_amount_packed = struct.pack("<Q", params['min_amount_lamports'])
-        data = discriminator + token_amount_packed + min_amount_packed
-
-        sell_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
-        compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
+        
+        resp = await self.client.get_token_account_balance(params['associated_token_account'])
+        token_balance = int(resp.value.amount)
+        token_balance_decimal = token_balance / 10**TOKEN_DECIMALS
+        curve_state = await self.get_pump_curve_state(params['bonding_curve'])
+        token_price_sol = self.calculate_pump_curve_price(curve_state)
+        amount = params['token_amount']
+        min_sol_output = float(token_balance_decimal) * float(token_price_sol)
+        slippage_factor = 1 - 0.3
+        min_sol_output = int((min_sol_output * slippage_factor) * LAMPORTS_PER_SOL)
+        
+        print(f"Selling {token_balance_decimal} tokens")
+        print(f"Minimum SOL output: {min_sol_output / LAMPORTS_PER_SOL:.10f} SOL")
 
         for attempt in range(retries):
             try:
                 logger.info(f"Попытка отправки Sell транзакции {attempt + 1} из {retries}")
+                discriminator = struct.pack("<Q", 12502976635542562355)
+                data = discriminator + struct.pack("<Q", amount) + struct.pack("<Q", min_sol_output)
+                sell_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
                 
-                tx_sell = Transaction().add(sell_ix).add(compute_budget_ix)
-                tx_sell.recent_blockhash = (await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
-                tx_sell.fee_payer = self.payer.pubkey()
-                tx_sell.sign(self.payer)
+                recent_blockhash = await self.client.get_latest_blockhash()
+                transaction = Transaction()
+                transaction.add(sell_ix).add(set_compute_unit_price(self.compute_unit_price))
+                transaction.recent_blockhash = recent_blockhash.value.blockhash
 
-                tx_sell_signature = await send_request_with_rate_limit(
-                    self.client,
-                    self.client.send_transaction,
-                    tx_sell,
+                tx_sell_signature = await self.client.send_transaction(
+                    transaction,
                     self.payer,
-                    opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed),
                 )
-                
-                logger.info(f"Sell Transaction отправлен: https://explorer.solana.com/tx/{tx_sell_signature.value}")
-                
-                # Ожидание подтверждения с увеличенным таймаутом и повторными попытками
+
+                print(f"Transaction sent: https://explorer.solana.com/tx/{tx_sell_signature.value}")
+
                 await self.confirm_transaction_with_delay(
                     tx_sell_signature.value,
                     max_retries=15,
@@ -451,7 +473,7 @@ class SolanaClient:
             'associated_bonding_curve': associated_bonding_curve,
             'associated_token_account': associated_token_account,
             'token_amount': token_amount,
-            'min_amount_lamports': int(min_amount * LAMPORTS_PER_SOL)
+            'min_amount_lamports': int(min_amount * LAMPORTS_PER_SOL),
         }
 
         try:
@@ -460,3 +482,6 @@ class SolanaClient:
             logger.error(f"Не удалось выполнить Sell транзакцию после повторных попыток: {re}")
         except Exception as e:
             logger.error(f"Не удалось выполнить Sell транзакцию: {e}")
+
+
+

@@ -31,7 +31,7 @@ def get_encrypted_keypair() -> Keypair:
         raise ValueError(f"Error loading encrypted keypair: {e}")
 
 # Константы конфигурации
-COMPUTE_UNIT_PRICE = 1_000  # Compute unit price in microlamports
+COMPUTE_UNIT_PRICE = int(os.getenv("COMPUTE_UNIT_PRICE", "10000"))  # Значение по умолчанию: 10,000,000 лампортов за вычислительную единицу
 
 # Получаем keypair безопасным способом
 try:
