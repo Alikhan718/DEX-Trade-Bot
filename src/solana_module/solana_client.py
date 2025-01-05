@@ -30,9 +30,11 @@ from tenacity import (
     RetryError
 )
 
+from dotenv import load_dotenv
+
 import httpx  # Используется в обработке исключений
 
-from .config import PRIVATE_KEY, COMPUTE_UNIT_PRICE
+from .config import COMPUTE_UNIT_PRICE
 from .utils import get_bonding_curve_address, find_associated_bonding_curve
 
 # Configure Logging
@@ -45,6 +47,8 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 # Константы
 EXPECTED_DISCRIMINATOR = struct.pack("<Q", 6966180631402821399)
@@ -124,7 +128,7 @@ class SolanaClient:
         """
         Загружает ключевую пару из конфигурации.
         """
-        return PRIVATE_KEY
+        return Keypair.from_bytes(bytes([int(i) for i in os.getenv('SECRET_KEY').split(',')]))
 
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
         """
@@ -189,16 +193,15 @@ class SolanaClient:
             AccountMeta(pubkey=self.PUMP_PROGRAM, is_signer=False, is_writable=False),
         ]
 
-        discriminator = struct.pack("<Q", 16927863322537952870)
-        token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10**6))
-        max_amount_packed = struct.pack("<Q", params['max_amount_lamports'])
-        data = discriminator + token_amount_packed + max_amount_packed
-
-        buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
-        compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
-
         for attempt in range(retries):
             try:
+                discriminator = struct.pack("<Q", 16927863322537952870)
+                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10**6))
+                max_amount_packed = struct.pack("<Q", params['max_amount_lamports'])
+                data = discriminator + token_amount_packed + max_amount_packed
+
+                buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
+                compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
                 logger.info(f"Попытка отправки Buy транзакции {attempt + 1} из {retries}")
                 
                 tx_buy = Transaction().add(buy_ix).add(compute_budget_ix)
@@ -410,15 +413,14 @@ class SolanaClient:
         curve_state = await self.get_pump_curve_state(params['bonding_curve'])
         token_price_sol = self.calculate_pump_curve_price(curve_state)
         amount = params['token_amount']
-        min_sol_output = float(token_balance_decimal) * float(token_price_sol)
-        slippage_factor = 1 - 0.3
-        min_sol_output = int((min_sol_output * slippage_factor) * LAMPORTS_PER_SOL)
+        min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * (1 - 0.3)) #0.3 is slipage
         
-        print(f"Selling {token_balance_decimal} tokens")
-        print(f"Minimum SOL output: {min_sol_output / LAMPORTS_PER_SOL:.10f} SOL")
+        logger.info(f"Selling {token_balance_decimal} tokens")
+        logger.info(f"Minimum SOL output: {min_sol_output / LAMPORTS_PER_SOL:.10f} SOL")
 
         for attempt in range(retries):
             try:
+                
                 logger.info(f"Попытка отправки Sell транзакции {attempt + 1} из {retries}")
                 discriminator = struct.pack("<Q", 12502976635542562355)
                 data = discriminator + struct.pack("<Q", amount) + struct.pack("<Q", min_sol_output)
@@ -435,7 +437,7 @@ class SolanaClient:
                     opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed),
                 )
 
-                print(f"Transaction sent: https://explorer.solana.com/tx/{tx_sell_signature.value}")
+                logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_sell_signature.value}")
 
                 await self.confirm_transaction_with_delay(
                     tx_sell_signature.value,
