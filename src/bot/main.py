@@ -1,13 +1,12 @@
 import logging
 import asyncio
 from typing import Optional, Dict, Any, Callable, Awaitable
-from contextlib import asynccontextmanager
 
-from aiogram import Bot, Dispatcher, Router, BaseMiddleware
+from aiogram import Bot, Dispatcher, Router
 from aiogram.types import TelegramObject
 from aiogram.fsm.storage.memory import MemoryStorage
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 
 from ..utils.config import Config
 from ..utils.logger import setup_logging
@@ -16,74 +15,10 @@ from ..services.solana import SolanaService
 from ..services.smart_money import SmartMoneyTracker
 from ..services.token_info import TokenInfoService
 from ..services.rugcheck import RugCheckService
-
-from .handlers import start, wallet, smart_money, help, buy, rugcheck
+from .middleware import DatabaseMiddleware, ServicesMiddleware
+from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade
 
 logger = setup_logging()
-
-class DatabaseMiddleware(BaseMiddleware):
-    def __init__(self, session_factory):
-        self.session_factory = session_factory
-        
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: Dict[str, Any]
-    ) -> Any:
-        session = self.session_factory()
-        data['session'] = session
-        try:
-            result = await handler(event, data)
-            await self._commit_session(session)
-            return result
-        except Exception as e:
-            await self._rollback_session(session)
-            raise
-        finally:
-            await self._close_session(session)
-    
-    @staticmethod
-    async def _commit_session(session):
-        try:
-            session.commit()
-        except Exception as e:
-            logger.error(f"Error committing session: {e}")
-            session.rollback()
-            raise
-    
-    @staticmethod
-    async def _rollback_session(session):
-        try:
-            session.rollback()
-        except Exception as e:
-            logger.error(f"Error rolling back session: {e}")
-    
-    @staticmethod
-    async def _close_session(session):
-        try:
-            session.close()
-        except Exception as e:
-            logger.error(f"Error closing session: {e}")
-
-class ServicesMiddleware(BaseMiddleware):
-    def __init__(self, solana_service: SolanaService, smart_money_tracker: SmartMoneyTracker, rugcheck_service: RugCheckService):
-        self.solana_service = solana_service
-        self.smart_money_tracker = smart_money_tracker
-        self.rugcheck_service = rugcheck_service
-        
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: Dict[str, Any]
-    ) -> Any:
-        # Add services to handler data
-        data["solana_service"] = self.solana_service
-        data["smart_money_tracker"] = self.smart_money_tracker
-        data["rugcheck_service"] = self.rugcheck_service
-        
-        return await handler(event, data)
 
 class SolanaDEXBot:
     def __init__(self):
@@ -100,15 +35,22 @@ class SolanaDEXBot:
             self.rugcheck_service = RugCheckService()
             
             # Setup database
-            self.engine = create_engine(
+            self.engine = create_async_engine(
                 Config.DATABASE_URL,
                 pool_size=20,
                 max_overflow=10,
+                pool_timeout=30,
                 pool_pre_ping=True,
-                pool_recycle=3600
+                pool_recycle=3600,
+                echo=False
             )
-            Base.metadata.create_all(self.engine)
-            self.Session = scoped_session(sessionmaker(bind=self.engine))
+            
+            # Create async session factory
+            self.Session = sessionmaker(
+                self.engine,
+                class_=AsyncSession,
+                expire_on_commit=False
+            )
             
             # Register middlewares
             self.dp.message.middleware(DatabaseMiddleware(self.Session))
@@ -143,12 +85,21 @@ class SolanaDEXBot:
         self.dp.include_router(help.router)
         self.dp.include_router(buy.router)
         self.dp.include_router(rugcheck.router)
+        self.dp.include_router(copy_trade.router)
         
         logger.info("Handlers registered successfully")
+        
+    async def init_db(self):
+        """Initialize database tables"""
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
         
     async def start(self):
         """Start the bot polling"""
         try:
+            logger.info("Initializing database...")
+            await self.init_db()
+            
             logger.info("Starting bot polling")
             await self.dp.start_polling(self.bot)
         except Exception as e:
@@ -157,10 +108,8 @@ class SolanaDEXBot:
             # Cleanup
             if hasattr(self, 'rugcheck_service'):
                 await self.rugcheck_service.close()
-            if hasattr(self, 'Session'):
-                self.Session.remove()
             if hasattr(self, 'engine'):
-                self.engine.dispose()
+                await self.engine.dispose()
             
             # Close all RPC clients
             if hasattr(self, 'smart_money_tracker'):

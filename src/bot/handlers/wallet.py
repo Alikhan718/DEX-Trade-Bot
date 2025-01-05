@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+import asyncio
 
 from aiogram import Router, types
 from aiogram.filters import Command
@@ -95,27 +96,53 @@ async def on_show_private_key_button(callback_query: types.CallbackQuery, sessio
     """Handle show private key button press"""
     try:
         user_id = get_real_user_id(callback_query)
-        user = session.query(User).filter(
-            User.telegram_id == user_id
-        ).first()
+        user = await session.get(User, {"telegram_id": user_id})
         
-        if user:
-            # Send private key in private message
-            await callback_query.message.answer(
-                "🔑 Ваш приватный ключ:\n\n"
-                f"<code>{user.private_key}</code>\n\n"
-                "⚠️ ВНИМАНИЕ:\n"
-                "1. Никогда не делитесь этим ключом\n"
-                "2. Сохраните его в надежном месте\n"
-                "3. Потеря ключа = потеря доступа к кошельку",
-                parse_mode="HTML"
-            )
-            await callback_query.answer("Приватный ключ отправлен в чат")
-        else:
-            await callback_query.answer("❌ Кошелек не найден")
+        if not user:
+            await callback_query.answer("❌ Пользователь не найден")
+            return
+            
+        # Показываем предупреждение перед отображением ключа
+        await callback_query.message.edit_text(
+            "⚠️ ВНИМАНИЕ! ВАЖНАЯ ИНФОРМАЦИЯ О БЕЗОПАСНОСТИ!\n\n"
+            "🔒 Ваш приватный ключ - это доступ к вашим средствам.\n"
+            "- Никогда не делитесь им ни с кем\n"
+            "- Не вводите его на сторонних сайтах\n"
+            "- Храните его в надежном месте\n"
+            "- Сразу удалите это сообщение после просмотра\n\n"
+            "Ваш приватный ключ:\n"
+            f"<code>{user.private_key}</code>\n\n"
+            "❗️ Это сообщение будет автоматически удалено через 30 секунд",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🗑 Удалить сейчас", callback_data="delete_key_message")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="wallet_menu")]
+            ])
+        )
+        
+        # Устанавливаем таймер на удаление сообщения
+        asyncio.create_task(delete_message_after_delay(callback_query.message, 30))
+        
     except Exception as e:
         logger.error(f"Error showing private key: {e}")
-        await callback_query.answer("❌ Ошибка при показе приватного ключа")
+        await callback_query.answer("❌ Произошла ошибка")
+
+@router.callback_query(lambda c: c.data == "delete_key_message")
+async def on_delete_key_message(callback_query: types.CallbackQuery):
+    """Handle delete key message button press"""
+    try:
+        await callback_query.message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting key message: {e}")
+        await callback_query.answer("❌ Не удалось удалить сообщение")
+
+async def delete_message_after_delay(message: types.Message, delay: int):
+    """Delete message after specified delay in seconds"""
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Error auto-deleting key message: {e}")
 
 @router.callback_query(lambda c: c.data == "import_wallet")
 async def on_import_wallet_button(callback_query: types.CallbackQuery):

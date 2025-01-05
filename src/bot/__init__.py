@@ -2,7 +2,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.orm import Session
 
-from .handlers import start, wallet, smart_money, help, buy
+from .handlers import start, wallet, smart_money, help, buy, copy_trade
 from .middleware import DatabaseMiddleware
 from ..services.solana import SolanaService
 from ..utils.config import Config
@@ -25,6 +25,7 @@ def setup_handlers(dp: Dispatcher, session: Session, solana_service: SolanaServi
     dp.include_router(smart_money.router)
     dp.include_router(help.router)
     dp.include_router(buy.router)
+    dp.include_router(copy_trade.router)
     
     return dp
 

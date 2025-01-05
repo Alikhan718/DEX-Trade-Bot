@@ -1,63 +1,22 @@
 import logging
-import uuid
-from datetime import datetime
-
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import datetime
+import uuid
+from solders.keypair import Keypair
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...database.models import User
 from ...services.solana import SolanaService
-from solders.keypair import Keypair
-
-logger = logging.getLogger(__name__)
+from ..utils.user import get_real_user_id
 
 router = Router()
-
-def get_real_user_id(event: types.Message | CallbackQuery | types.Update) -> int:
-    """Get real user ID from any event type"""
-    logger.info(f"Getting real user ID from event type: {type(event)}")
-    
-    # If it's a callback query
-    if isinstance(event, CallbackQuery):
-        if event.from_user and event.from_user.id:
-            # Check if it's not a bot ID
-            user_id = event.from_user.id
-            if str(user_id).startswith('7871396830'):
-                logger.warning(f"Got bot ID {user_id}, trying to get real user ID")
-                if event.message and event.message.chat:
-                    user_id = event.message.chat.id
-                    logger.info(f"Using chat ID instead: {user_id}")
-            logger.info(f"Got user ID from callback_query.from_user: {user_id}")
-            return user_id
-        event = event.message  # Convert to message for further processing
-    
-    # If it's a message
-    if isinstance(event, types.Message):
-        # Try from_user first
-        if event.from_user and event.from_user.id:
-            # Check if it's not a bot ID
-            user_id = event.from_user.id
-            if str(user_id).startswith('7871396830'):
-                logger.warning(f"Got bot ID {user_id}, trying to get real user ID")
-                if event.chat:
-                    user_id = event.chat.id
-                    logger.info(f"Using chat ID instead: {user_id}")
-            logger.info(f"Got user ID from message.from_user: {user_id}")
-            return user_id
-        
-        # Try chat as fallback
-        if event.chat and event.chat.id:
-            user_id = event.chat.id
-            logger.info(f"Got user ID from message.chat: {user_id}")
-            return user_id
-    
-    # If we got here, we couldn't find a valid ID
-    logger.error(f"Could not determine user ID from event: {event}")
-    raise ValueError("Could not determine user ID")
+logger = logging.getLogger(__name__)
 
 @router.message(Command("start"))
-async def show_main_menu(message: types.Message, session, solana_service: SolanaService):
+async def show_main_menu(message: types.Message, session: AsyncSession, solana_service: SolanaService):
     """Show main menu with wallet info"""
     try:
         # Get real user ID
@@ -65,28 +24,30 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
         logger.info(f"Processing start command for user ID: {user_id}")
         
         # Try to find user by any possible ID
-        user = session.query(User).filter(
-            User.telegram_id == user_id
-        ).first()
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
         
         if not user:
             # Log all existing users for debugging
-            all_users = session.query(User).all()
+            stmt = select(User)
+            result = await session.execute(stmt)
+            all_users = result.scalars().all()
             logger.info("Current users in database:")
             for u in all_users:
                 logger.info(f"ID: {u.telegram_id}, Wallet: {u.solana_wallet}")
             
             # Also check the alternative ID format
             alt_id = int(str(user_id).replace("bot", ""))
-            user = session.query(User).filter(
-                User.telegram_id == alt_id
-            ).first()
+            stmt = select(User).where(User.telegram_id == alt_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
             
             if user:
                 # Update the ID to the current one
                 logger.info(f"Updating user ID from {user.telegram_id} to {user_id}")
                 user.telegram_id = user_id
-                session.commit()
+                await session.commit()
         
         if not user:
             # Generate new Solana wallet for new user
@@ -104,7 +65,7 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
                 last_activity=datetime.now()
             )
             session.add(user)
-            session.commit()
+            await session.commit()
             logger.info(f"Created new wallet for user {user_id}: {user.solana_wallet}")
             
             # Send welcome message for new users
@@ -119,7 +80,7 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
         
         # Update last activity
         user.last_activity = datetime.now()
-        session.commit()
+        await session.commit()
         
         # Get wallet balance and SOL price
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
@@ -159,9 +120,8 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
         ])
         
         await message.answer(
-            f"💳 Ваш кошелек: <code>{user.solana_wallet}</code>\n\n"
-            f"💰 Баланс: {balance:.4f} SOL (${usd_balance:.2f})\n\n"
-            "💡 Вы можете отправить SOL на этот адрес или импортировать существующий кошелек.\n\n"
+            f"💳 Баланс кошелька: {balance:.4f} SOL (${usd_balance:.2f})\n"
+            f"💳 Адрес: <code>{user.solana_wallet}</code>\n\n"
             "Выберите действие:",
             reply_markup=keyboard,
             parse_mode="HTML"
@@ -169,16 +129,19 @@ async def show_main_menu(message: types.Message, session, solana_service: Solana
         
     except Exception as e:
         logger.error(f"Error showing main menu: {e}")
-        await message.answer("❌ Ошибка при загрузке меню")
+        await message.answer(
+            "❌ Произошла ошибка при загрузке меню.\n"
+            "Пожалуйста, попробуйте позже или обратитесь в поддержку."
+        )
 
 @router.message(Command("reset"))
-async def reset_user_data(message: types.Message, session):
+async def reset_user_data(message: types.Message, session: AsyncSession):
     """Delete user data from database for testing"""
     try:
         user_id = get_real_user_id(message)
-        user = session.query(User).filter(
-            User.telegram_id == user_id
-        ).first()
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
         
         if user:
             # Log the deletion for recovery if needed
@@ -187,8 +150,8 @@ async def reset_user_data(message: types.Message, session):
             logger.info(f"Private key was: {user.private_key}")
             
             # Delete the user
-            session.delete(user)
-            session.commit()
+            await session.delete(user)
+            await session.commit()
             
             await message.answer(
                 "🗑 Ваши данные успешно удалены из базы данных.\n"
@@ -204,11 +167,66 @@ async def reset_user_data(message: types.Message, session):
             
     except Exception as e:
         logger.error(f"Error resetting user data: {e}")
-        await message.answer("❌ Ошибка при удалении данных")
+        await message.answer("❌ Ошибка при удалении данных") 
 
 @router.callback_query(lambda c: c.data == "main_menu")
-async def on_main_menu_button(callback_query: types.CallbackQuery, session, solana_service: SolanaService):
-    """Handle main menu button press"""
-    await callback_query.answer()
-    # Pass the callback_query directly instead of message
-    await show_main_menu(callback_query.message, session, solana_service) 
+async def back_to_main_menu(callback_query: types.CallbackQuery, session: AsyncSession, solana_service: SolanaService):
+    """Return to main menu"""
+    try:
+        user_id = get_real_user_id(callback_query)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            await callback_query.answer("❌ Пользователь не найден")
+            return
+            
+        # Get wallet balance and SOL price
+        balance = await solana_service.get_wallet_balance(user.solana_wallet)
+        sol_price = await solana_service.get_sol_price()
+        usd_balance = balance * sol_price
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            # Trading buttons
+            [
+                InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
+                InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
+            ],
+            # Trading features
+            [
+                InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
+                InlineKeyboardButton(text="🧠 Smart Wallet", callback_data="smart_money")
+            ],
+            # Orders and positions
+            [
+                InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
+                InlineKeyboardButton(text="📈 Открытые Позиции", callback_data="open_positions")
+            ],
+            # Security and wallet
+            [
+                InlineKeyboardButton(text="🛡️ Проверка на скам", callback_data="rugcheck"),
+                InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu")
+            ],
+            # Settings and help
+            [
+                InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+                InlineKeyboardButton(text="❓ Помощь", callback_data="help")
+            ],
+            # Referral
+            [
+                InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral")
+            ]
+        ])
+        
+        await callback_query.message.edit_text(
+            f"💳 Баланс кошелька: {balance:.4f} SOL (${usd_balance:.2f})\n"
+            f"💳 Адрес: <code>{user.solana_wallet}</code>\n\n"
+            "Выберите действие:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error returning to main menu: {e}")
+        await callback_query.answer("❌ Произошла ошибка") 

@@ -25,6 +25,14 @@ class Config:
     
     # Core bot configuration
     TELEGRAM_BOT_TOKEN = get_env_variable('TELEGRAM_BOT_TOKEN')
+    
+    # Database configuration
+    DATABASE_URL = get_env_variable(
+        'DATABASE_URL',
+        'postgresql+asyncpg://postgres:postgres@localhost:5432/dex_bot'
+    )
+    
+    # RPC configuration
     SOLANA_RPC_URLS = [
         'https://api.mainnet-beta.solana.com',  # Public RPC
         'https://solana-api.projectserum.com',  # Public RPC
@@ -37,7 +45,6 @@ class Config:
         'https://api.mainnet.solana.com',  # Public RPC
     ]
     SOLANA_RPC_URL = SOLANA_RPC_URLS[0]  # Use public RPC by default
-    DATABASE_URL = get_env_variable('DATABASE_URL', 'sqlite:///solana_dex_bot.db')
     BOT_USERNAME = get_env_variable('BOT_USERNAME', 'DEX_Copy_Trade_Bot')
     
     # Logging configuration

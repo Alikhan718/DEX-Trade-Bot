@@ -1,20 +1,50 @@
 # solana_module/config.py
 
 import os
+from dotenv import load_dotenv
 from solders.keypair import Keypair
+from cryptography.fernet import Fernet
 
-keypair_json = {
-    "secret_key": [
-        232, 180, 152, 108, 183, 236, 164, 6, 173, 8, 164, 67, 59, 100, 127, 180,
-        113, 74, 29, 14, 40, 191, 87, 156, 93, 202, 188, 55, 133, 176, 82, 188,
-        223, 244, 78, 239, 202, 94, 154, 38, 38, 135, 246, 124, 72, 56, 137, 94,
-        35, 218, 118, 114, 232, 187, 28, 112, 151, 76, 208, 182, 193, 180, 210, 117
-    ]
-}
+load_dotenv()
 
-#Private key
-PRIVATE_KEY = Keypair.from_bytes(bytes(keypair_json["secret_key"]))
-print(PRIVATE_KEY)
+def get_encrypted_keypair() -> Keypair:
+    """Получает зашифрованный keypair из переменных окружения"""
+    try:
+        # Получаем ключ шифрования
+        encryption_key = os.getenv('ENCRYPTION_KEY')
+        if not encryption_key:
+            raise ValueError("ENCRYPTION_KEY not found in environment variables")
+            
+        # Получаем зашифрованный приватный ключ
+        encrypted_key = os.getenv('ENCRYPTED_PRIVATE_KEY')
+        if not encrypted_key:
+            raise ValueError("ENCRYPTED_PRIVATE_KEY not found in environment variables")
+            
+        # Расшифровываем ключ
+        cipher_suite = Fernet(encryption_key.encode())
+        decrypted_data = cipher_suite.decrypt(encrypted_key.encode())
+        
+        # Преобразуем в keypair
+        return Keypair.from_bytes(eval(decrypted_data.decode()))
+        
+    except Exception as e:
+        raise ValueError(f"Error loading encrypted keypair: {e}")
 
-# Получение Compute Unit Price (аналог gas fee в Ethereum) из переменных окружения или установка значения по умолчанию
-COMPUTE_UNIT_PRICE = int(os.getenv("COMPUTE_UNIT_PRICE", "1000000"))  # Значение по умолчанию: 10,000,000 лампортов за вычислительную единицу
+# Константы конфигурации
+COMPUTE_UNIT_PRICE = 1_000  # Compute unit price in microlamports
+
+# Получаем keypair безопасным способом
+try:
+    PRIVATE_KEY = get_encrypted_keypair()
+except ValueError as e:
+    print(f"Error: {e}")
+    print("\nPlease set up your environment variables:")
+    print("1. Generate a new encryption key:")
+    print("   ENCRYPTION_KEY = Fernet.generate_key()")
+    print("2. Encrypt your private key:")
+    print("   cipher_suite = Fernet(ENCRYPTION_KEY)")
+    print("   encrypted_key = cipher_suite.encrypt(str(private_key_bytes).encode())")
+    print("3. Add both to your .env file:")
+    print("   ENCRYPTION_KEY=your_encryption_key")
+    print("   ENCRYPTED_PRIVATE_KEY=your_encrypted_private_key")
+    raise
