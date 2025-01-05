@@ -113,7 +113,7 @@ class SolanaClient:
         self.client = AsyncClient(self.rpc_endpoint)
         self.compute_unit_price = compute_unit_price
 
-        # Адреса программ
+        # Program addresses
         self.PUMP_PROGRAM = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
         self.PUMP_GLOBAL = Pubkey.from_string("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
         self.PUMP_EVENT_AUTHORITY = Pubkey.from_string("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
@@ -131,9 +131,7 @@ class SolanaClient:
         return Keypair.from_bytes(bytes([int(i) for i in os.getenv('SECRET_KEY').split(',')]))
 
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
-        """
-        Creates an associated token account for the given mint if it doesn't exist.
-        """
+        """Creates associated token account for given mint if it doesn't exist."""
         associated_token_account = get_associated_token_address(self.payer.pubkey(), mint)
         account_info = await send_request_with_rate_limit(self.client, self.client.get_account_info, associated_token_account)
         if account_info.value is None:
@@ -195,6 +193,8 @@ class SolanaClient:
 
         for attempt in range(retries):
             try:
+                logger.info(f"Attempting to send Buy transaction {attempt + 1} of {retries}")
+                
                 discriminator = struct.pack("<Q", 16927863322537952870)
                 token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10**6))
                 max_amount_packed = struct.pack("<Q", params['max_amount_lamports'])
@@ -202,7 +202,6 @@ class SolanaClient:
 
                 buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
                 compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
-                logger.info(f"Попытка отправки Buy транзакции {attempt + 1} из {retries}")
                 
                 tx_buy = Transaction().add(buy_ix).add(compute_budget_ix)
                 tx_buy.recent_blockhash = (await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
@@ -217,7 +216,7 @@ class SolanaClient:
                     opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
                 )
                 
-                logger.info(f"Buy Transaction отправлен: https://explorer.solana.com/tx/{tx_buy_signature.value}")
+                logger.info(f"Buy Transaction sent: https://explorer.solana.com/tx/{tx_buy_signature.value}")
                 
                 # Ожидание подтверждения с увеличенным таймаутом и повторными попытками
                 await self.confirm_transaction_with_delay(
@@ -226,18 +225,18 @@ class SolanaClient:
                     retry_delay=6
                 )
                 
-                logger.info(f"Buy транзакция подтверждена: {tx_buy_signature.value}")
+                logger.info(f"Buy transaction confirmed: {tx_buy_signature.value}")
                 return tx_buy_signature.value
                 
             except Exception as e:
                 if attempt == retries - 1:
-                    logger.error(f"Не удалось отправить Buy транзакцию: {str(e)}")
+                    logger.error(f"Failed to send Buy transaction: {str(e)}")
                     raise
                 
-                logger.warning(f"Попытка транзакции {attempt + 1} не удалась: {str(e)}. Повторная попытка...")
-                await asyncio.sleep(2 * (attempt + 1))  # Экспоненциальная задержка
+                logger.warning(f"Transaction attempt {attempt + 1} failed: {str(e)}. Retrying...")
+                await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
 
-        raise Exception("Не удалось отправить транзакцию после всех попыток")
+        raise Exception("Failed to send transaction after all attempts")
 
     async def confirm_transaction_with_delay(self, signature: str, max_retries: int = 10, retry_delay: int = 5):
         """
@@ -276,9 +275,7 @@ class SolanaClient:
         raise Exception(f"Transaction confirmation timeout after {max_retries} attempts")
 
     async def buy_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, amount: float, slippage: float = 0.25):
-        """
-        Executes token purchase.
-        """
+        """Executes token purchase."""
         try:
             associated_token_account = await self.create_associated_token_account(mint)
         except Exception as e:
@@ -318,9 +315,7 @@ class SolanaClient:
             logger.error(f"Failed to execute Buy transaction: {e}")
 
     async def get_pump_curve_state(self, curve_address: Pubkey) -> BondingCurveState:
-        """
-        Gets bonding curve state by address.
-        """
+        """Gets bonding curve state by address."""
         logger.info(f"Getting bonding curve state for address: {curve_address}")
         response = await send_request_with_rate_limit(self.client, self.client.get_account_info, curve_address)
         if not response.value or not response.value.data:
@@ -335,9 +330,7 @@ class SolanaClient:
         return BondingCurveState(data)
 
     def calculate_pump_curve_price(self, curve_state: BondingCurveState) -> float:
-        """
-        Calculates token price based on bonding curve state.
-        """
+        """Calculates token price based on bonding curve state."""
         if curve_state.virtual_token_reserves <= 0 or curve_state.virtual_sol_reserves <= 0:
             raise ValueError("Invalid reserves state")
 
@@ -346,14 +339,12 @@ class SolanaClient:
         return price
 
     async def get_account_tokens(self, account_pubkey: Pubkey) -> list:
-        """
-        Gets list of tokens owned by the account.
-        """
+        """Gets list of tokens owned by the account."""
         logger.info(f"Getting tokens for account: {account_pubkey}")
         response = await send_request_with_rate_limit(self.client, self.client.get_token_accounts_by_owner, account_pubkey, TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM))
         
         if not response.value:
-            logger.info("No tokens found for this account.")
+            logger.info("No tokens found for this account")
             return []
         
         tokens = []
@@ -387,9 +378,7 @@ class SolanaClient:
         reraise=True
     )
     async def send_sell_transaction(self, params: dict, retries: int = 3):
-        """
-        Отправляет транзакцию продажи токенов.
-        """
+        """Sends sell transaction."""
         accounts = [
             AccountMeta(pubkey=self.PUMP_GLOBAL, is_signer=False, is_writable=False),
             AccountMeta(pubkey=self.PUMP_FEE, is_signer=False, is_writable=True),
@@ -404,24 +393,23 @@ class SolanaClient:
             AccountMeta(pubkey=self.PUMP_EVENT_AUTHORITY, is_signer=False, is_writable=False),
             AccountMeta(pubkey=self.PUMP_PROGRAM, is_signer=False, is_writable=False),
         ]
-
-        # Замените на правильный дискриминатор для продажи
         
         resp = await self.client.get_token_account_balance(params['associated_token_account'])
         token_balance = int(resp.value.amount)
         token_balance_decimal = token_balance / 10**TOKEN_DECIMALS
         curve_state = await self.get_pump_curve_state(params['bonding_curve'])
         token_price_sol = self.calculate_pump_curve_price(curve_state)
-        amount = params['token_amount']
-        min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * (1 - 0.3)) #0.3 is slipage
+        
+        # Convert token amount to integer with decimals
+        amount = int(params['token_amount'] * 10**TOKEN_DECIMALS)
+        min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
         
         logger.info(f"Selling {token_balance_decimal} tokens")
         logger.info(f"Minimum SOL output: {min_sol_output / LAMPORTS_PER_SOL:.10f} SOL")
 
         for attempt in range(retries):
             try:
-                
-                logger.info(f"Попытка отправки Sell транзакции {attempt + 1} из {retries}")
+                logger.info(f"Attempting to send Sell transaction {attempt + 1} of {retries}")
                 discriminator = struct.pack("<Q", 12502976635542562355)
                 data = discriminator + struct.pack("<Q", amount) + struct.pack("<Q", min_sol_output)
                 sell_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
@@ -430,6 +418,8 @@ class SolanaClient:
                 transaction = Transaction()
                 transaction.add(sell_ix).add(set_compute_unit_price(self.compute_unit_price))
                 transaction.recent_blockhash = recent_blockhash.value.blockhash
+                transaction.fee_payer = self.payer.pubkey()
+                transaction.sign(self.payer)
 
                 tx_sell_signature = await self.client.send_transaction(
                     transaction,
@@ -445,27 +435,25 @@ class SolanaClient:
                     retry_delay=6
                 )
                 
-                logger.info(f"Sell транзакция подтверждена: {tx_sell_signature.value}")
+                logger.info(f"Sell transaction confirmed: {tx_sell_signature.value}")
                 return tx_sell_signature.value
-                
+
             except Exception as e:
                 if attempt == retries - 1:
-                    logger.error(f"Не удалось отправить Sell транзакцию: {str(e)}")
+                    logger.error(f"Failed to send Sell transaction: {str(e)}")
                     raise
                 
-                logger.warning(f"Попытка транзакции {attempt + 1} не удалась: {str(e)}. Повторная попытка...")
-                await asyncio.sleep(2 * (attempt + 1))  # Экспоненциальная задержка
+                logger.warning(f"Transaction attempt {attempt + 1} failed: {str(e)}. Retrying...")
+                await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
 
-        raise Exception("Не удалось отправить транзакцию после всех попыток")
+        raise Exception("Failed to send transaction after all attempts")
 
     async def sell_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, token_amount: float, min_amount: float = 0.25):
-        """
-        Выполняет продажу токенов.
-        """
+        """Executes token sale."""
         try:
             associated_token_account = await self.create_associated_token_account(mint)
         except Exception as e:
-            logger.error(f"Не удалось создать или проверить ассоциированный токен аккаунт: {e}")
+            logger.error(f"Failed to create or verify associated token account: {e}")
             return
 
         # Здесь можно добавить логику для получения минимальной суммы в SOL, основываясь на слиппейдже и текущей цене токена
@@ -480,11 +468,26 @@ class SolanaClient:
         }
 
         try:
-            await self.send_sell_transaction(params)
+            return await self.send_sell_transaction(params)
         except RetryError as re:
-            logger.error(f"Не удалось выполнить Sell транзакцию после повторных попыток: {re}")
+            logger.error(f"Failed to execute Sell transaction after retries: {re}")
         except Exception as e:
-            logger.error(f"Не удалось выполнить Sell транзакцию: {e}")
+            logger.error(f"Failed to execute Sell transaction: {e}")
+
+    async def get_token_balance(self, token_address: Pubkey) -> float:
+        """
+        Gets token balance for the associated token account.
+        Returns balance in decimal format.
+        """
+        try:
+            associated_token_account = await self.create_associated_token_account(token_address)
+            response = await send_request_with_rate_limit(self.client, self.client.get_token_account_balance, associated_token_account)
+            if response.value:
+                return float(response.value.amount) / 10**TOKEN_DECIMALS
+            return 0
+        except Exception as e:
+            logger.error(f"Failed to get token balance: {e}")
+            return 0
 
 
 

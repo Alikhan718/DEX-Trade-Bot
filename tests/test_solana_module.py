@@ -41,7 +41,7 @@ async def main():
         logger.info(f"Покупка токенов на сумму {amount_sol:.6f} SOL с допустимым слиппейджем {slippage*100:.1f}%...")
 
         # Выполнение покупки токенов
-        await client.buy_token(mint, bonding_curve_address, associated_bonding_curve, amount_sol, slippage)
+        # await client.buy_token(mint, bonding_curve_address, associated_bonding_curve, amount_sol, slippage)
 
         # Получение списка токенов аккаунта
         account_pubkey = client.payer.pubkey()
