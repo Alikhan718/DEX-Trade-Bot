@@ -132,12 +132,12 @@ class SolanaClient:
 
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
         """
-        Создаёт ассоциированный токен аккаунт для данного mint, если он ещё не существует.
+        Creates an associated token account for the given mint if it doesn't exist.
         """
         associated_token_account = get_associated_token_address(self.payer.pubkey(), mint)
         account_info = await send_request_with_rate_limit(self.client, self.client.get_account_info, associated_token_account)
         if account_info.value is None:
-            logger.info("Создание ассоциированного токен аккаунта...")
+            logger.info("Creating associated token account...")
             create_ata_ix = spl_token.create_associated_token_account(
                 payer=self.payer.pubkey(),
                 owner=self.payer.pubkey(),
@@ -156,15 +156,15 @@ class SolanaClient:
                     self.payer,
                     opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
                 )
-                logger.info(f"ATA Transaction отправлен: https://explorer.solana.com/tx/{tx_ata_signature.value}")
+                logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
                 await self.confirm_transaction_with_delay(tx_ata_signature.value)
-                logger.info(f"Ассоциированный токен аккаунт создан: {associated_token_account}")
+                logger.info(f"Associated token account created: {associated_token_account}")
             except Exception as e:
-                logger.error(f"Не удалось отправить ATA транзакцию: {e}")
+                logger.error(f"Failed to send ATA transaction: {e}")
                 logger.error(traceback.format_exc())
                 raise
         else:
-            logger.info(f"Ассоциированный токен аккаунт уже существует: {associated_token_account}")
+            logger.info(f"Associated token account already exists: {associated_token_account}")
         return associated_token_account
 
     @retry(
@@ -241,63 +241,63 @@ class SolanaClient:
 
     async def confirm_transaction_with_delay(self, signature: str, max_retries: int = 10, retry_delay: int = 5):
         """
-        Ожидает подтверждения транзакции с задержкой и ограничением количества попыток.
+        Waits for transaction confirmation with delay and retry limit.
         """
-        logger.info(f"Ожидание подтверждения транзакции: {signature}")
+        logger.info(f"Waiting for transaction confirmation: {signature}")
         
         for attempt in range(max_retries):
             try:
-                logger.info(f"Попытка подтверждения {attempt + 1} для транзакции {signature}")
+                logger.info(f"Confirmation attempt {attempt + 1} for transaction {signature}")
                 response = await send_request_with_rate_limit(self.client, self.client.get_signature_statuses, [signature])
                 if not response.value or not response.value[0]:
-                    logger.info("Статус подписи не найден. Повторная попытка...")
+                    logger.info("Signature status not found. Retrying...")
                     await asyncio.sleep(retry_delay)
                     continue
 
                 signature_status = response.value[0]
                 if signature_status.err is not None:
-                    error_msg = f"Транзакция завершилась с ошибкой: {signature_status.err}"
+                    error_msg = f"Transaction failed with error: {signature_status.err}"
                     logger.error(error_msg)
                     raise Exception(error_msg)
                     
                 if signature_status.confirmation_status:
-                    logger.info("Транзакция успешно подтверждена!")
-                    logger.info(f"Текущий статус: {signature_status.confirmation_status}")
+                    logger.info("Transaction successfully confirmed!")
+                    logger.info(f"Current status: {signature_status.confirmation_status}")
                     return True
-                logger.info(f"Текущий статус: {signature_status.confirmation_status}. Ожидание финализации...")
+                logger.info(f"Current status: {signature_status.confirmation_status}. Waiting for finalization...")
                 await asyncio.sleep(retry_delay)
                 
             except Exception as e:
                 if attempt == max_retries - 1:
-                    raise Exception(f"Не удалось подтвердить транзакцию после {max_retries} попыток: {str(e)}")
-                logger.warning(f"Ошибка при проверке статуса транзакции: {str(e)}. Повторная попытка...")
+                    raise Exception(f"Failed to confirm transaction after {max_retries} attempts: {str(e)}")
+                logger.warning(f"Error checking transaction status: {str(e)}. Retrying...")
                 await asyncio.sleep(retry_delay)
         
-        raise Exception(f"Время ожидания подтверждения транзакции истекло после {max_retries} попыток")
+        raise Exception(f"Transaction confirmation timeout after {max_retries} attempts")
 
     async def buy_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, amount: float, slippage: float = 0.25):
         """
-        Выполняет покупку токенов.
+        Executes token purchase.
         """
         try:
             associated_token_account = await self.create_associated_token_account(mint)
         except Exception as e:
-            logger.error(f"Не удалось создать или проверить ассоциированный токен аккаунт: {e}")
+            logger.error(f"Failed to create or verify associated token account: {e}")
             return
 
         amount_lamports = int(amount * LAMPORTS_PER_SOL)
 
-        # Получение цены токена
+        # Get token price
         try:
             curve_state = await self.get_pump_curve_state(bonding_curve)
             token_price_sol = self.calculate_pump_curve_price(curve_state)
         except Exception as e:
-            logger.error(f"Не удалось получить или вычислить цену токена: {e}")
+            logger.error(f"Failed to get or calculate token price: {e}")
             return
 
         token_amount = amount / token_price_sol
 
-        # Расчет максимального количества SOL с учетом слиппейджа
+        # Calculate maximum SOL amount with slippage
         max_amount_lamports = int(amount_lamports * (1 + slippage))
 
         params = {
@@ -310,49 +310,50 @@ class SolanaClient:
         }
 
         try:
-            await self.send_buy_transaction(params)
+            signature = await self.send_buy_transaction(params)
+            return signature  # Return the transaction signature
         except RetryError as re:
-            logger.error(f"Не удалось выполнить Buy транзакцию после повторных попыток: {re}")
+            logger.error(f"Failed to execute Buy transaction after retries: {re}")
         except Exception as e:
-            logger.error(f"Не удалось выполнить Buy транзакцию: {e}")
+            logger.error(f"Failed to execute Buy transaction: {e}")
 
     async def get_pump_curve_state(self, curve_address: Pubkey) -> BondingCurveState:
         """
-        Получает состояние кривой связывания по адресу.
+        Gets bonding curve state by address.
         """
-        logger.info(f"Получение состояния кривой связывания по адресу: {curve_address}")
+        logger.info(f"Getting bonding curve state for address: {curve_address}")
         response = await send_request_with_rate_limit(self.client, self.client.get_account_info, curve_address)
         if not response.value or not response.value.data:
-            logger.error("Недопустимое состояние кривой: Нет данных")
-            raise ValueError("Недопустимое состояние кривой: Нет данных")
+            logger.error("Invalid curve state: No data")
+            raise ValueError("Invalid curve state: No data")
 
         data = response.value.data
         if data[:8] != EXPECTED_DISCRIMINATOR:
-            logger.error("Неверный дискриминатор состояния кривой")
-            raise ValueError("Неверный дискриминатор состояния кривой")
+            logger.error("Invalid curve state discriminator")
+            raise ValueError("Invalid curve state discriminator")
 
         return BondingCurveState(data)
 
     def calculate_pump_curve_price(self, curve_state: BondingCurveState) -> float:
         """
-        Вычисляет цену токена на основе состояния кривой связывания.
+        Calculates token price based on bonding curve state.
         """
         if curve_state.virtual_token_reserves <= 0 or curve_state.virtual_sol_reserves <= 0:
-            raise ValueError("Недопустимое состояние резервов")
+            raise ValueError("Invalid reserves state")
 
         price = (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
-        logger.info(f"Вычисленная цена токена: {price:.10f} SOL")
+        logger.info(f"Calculated token price: {price:.10f} SOL")
         return price
 
     async def get_account_tokens(self, account_pubkey: Pubkey) -> list:
         """
-        Получает список токенов, принадлежащих аккаунту.
+        Gets list of tokens owned by the account.
         """
-        logger.info(f"Получение токенов для аккаунта: {account_pubkey}")
+        logger.info(f"Getting tokens for account: {account_pubkey}")
         response = await send_request_with_rate_limit(self.client, self.client.get_token_accounts_by_owner, account_pubkey, TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM))
-        #pipip
+        
         if not response.value:
-            logger.info("Токены для этого аккаунта не найдены.")
+            logger.info("No tokens found for this account.")
             return []
         
         tokens = []
@@ -360,9 +361,8 @@ class SolanaClient:
             token_pubkey = token_account.pubkey
             token_info = await send_request_with_rate_limit(self.client, self.client.get_account_info, token_pubkey)
             if token_info.value and token_info.value.data:
-                # Здесь можно распарсить информацию о токене по необходимости
                 tokens.append(token_pubkey)
-        logger.info(f"Найдено {len(tokens)} токенов для аккаунта {account_pubkey}")
+        logger.info(f"Found {len(tokens)} tokens for account {account_pubkey}")
         return tokens
     
     def derive_event_authority_pda(self, bonding_curve: Pubkey, mint: Pubkey) -> Pubkey:

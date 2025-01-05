@@ -20,13 +20,9 @@ class UserTransactionHandler:
             compute_unit_price: Price per compute unit in lamports
         """
         try:
-            # Convert string representation of private key array back to bytes
-            private_key_bytes = eval(private_key_str)
-            self.keypair = Keypair.from_bytes(private_key_bytes)
+            
             # Initialize SolanaClient with user's keypair
             self.client = SolanaClient(compute_unit_price)
-            self.client.payer = self.keypair  # Override default payer with user's keypair
-            logger.info(f"Initialized transaction handler for wallet: {self.keypair.pubkey()}")
         except Exception as e:
             logger.error(f"Error initializing transaction handler: {e}")
             raise ValueError("Invalid private key format")

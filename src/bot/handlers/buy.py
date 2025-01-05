@@ -385,12 +385,12 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
             # Предустановленные суммы с отметкой выбранной
             [
                 InlineKeyboardButton(
-                    text="✓ 0.2 SOL" if amount == 0.2 else "0.2 SOL",
-                    callback_data="buy_0.2"
+                    text="✓ 0.002 SOL" if amount == 0.002 else "0.002 SOL",
+                    callback_data="buy_0.002"
                 ),
                 InlineKeyboardButton(
-                    text="✓ 0.5 SOL" if amount == 0.5 else "0.5 SOL",
-                    callback_data="buy_0.5"
+                    text="✓ 0.005 SOL" if amount == 0.005 else "0.005 SOL",
+                    callback_data="buy_0.005"
                 ),
                 InlineKeyboardButton(
                     text="✓ 1 SOL" if amount == 1.0 else "1 SOL",
