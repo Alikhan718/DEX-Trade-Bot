@@ -169,6 +169,7 @@ class SolanaClient:
         stop=stop_after_attempt(5),
         reraise=True
     )
+    
     async def send_buy_transaction(self, params: dict, retries: int = 3):
         """
         Отправляет транзакцию покупки токенов.

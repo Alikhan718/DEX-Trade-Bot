@@ -4,6 +4,8 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from ...services.solana import SolanaService
 from ...services.token_info import TokenInfoService
@@ -57,38 +59,45 @@ async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
         await callback_query.answer("❌ Произошла ошибка")
 
 @router.message(BuyStates.waiting_for_token)
-async def handle_token_input(message: types.Message, state: FSMContext, session, solana_service: SolanaService):
-    """Обработчик ввода адреса токена для покупки"""
+async def handle_token_input(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
+    """Handle token address input"""
     try:
         token_address = message.text.strip()
         
-        # Проверяем валидность адреса
         if not _is_valid_token_address(token_address):
             await message.reply(
                 "❌ Неверный адрес токена\n"
-                "Пожалуйста, отправьте корректный адрес токена",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
-                ])
+                "Пожалуйста, проверьте адрес и попробуйте снова"
             )
             return
-
-        # Получаем информацию о пользователе
+            
+        # Get user info
         user_id = get_real_user_id(message)
-        user = session.query(User).filter(User.telegram_id == user_id).first()
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
         
         if not user:
-            await message.reply("❌ Ошибка: кошелек не найден")
+            await message.reply("❌ Пользователь не найден")
             return
             
-        # Получаем баланс кошелька
+        # Get token info
+        token_info = await token_info_service.get_token_info(token_address)
+        if not token_info:
+            await message.reply(
+                "❌ Не удалось получить информацию о токене\n"
+                "Пожалуйста, проверьте адрес и попробуйте снова"
+            )
+            return
+            
+        # Get wallet balance
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
-
-        # Получаем информацию о токене
-        token_info = await token_info_service.get_token_info(token_address)
-
+        
+        # Save token address to state
+        await state.update_data(token_address=token_address)
+        
         # Формируем клавиатуру
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             # Тип ордера
@@ -109,7 +118,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session,
             [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
         ])
-
+        
         # Формируем сообщение
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -123,21 +132,17 @@ async def handle_token_input(message: types.Message, state: FSMContext, session,
             f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
-
-        await message.reply(
-            message_text,
-            parse_mode="MARKDOWN",
-            disable_web_page_preview=True,
-            reply_markup=keyboard
-        )
         
-        # Очищаем состояние
-        await state.clear()
+        await message.answer(
+            message_text,
+            reply_markup=keyboard,
+            parse_mode="MARKDOWN",
+            disable_web_page_preview=True
+        )
         
     except Exception as e:
         logger.error(f"Error processing token address: {e}")
         await message.reply(
             "❌ Произошла ошибка при обработке адреса токена\n"
-            "Пожалуйста, попробуйте позже"
-        )
-        await state.clear() 
+            "Пожалуйста, попробуйте позже или обратитесь в поддержку"
+        ) 
