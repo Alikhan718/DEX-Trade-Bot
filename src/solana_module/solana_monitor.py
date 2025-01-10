@@ -99,10 +99,10 @@ class SolanaMonitor:
             # Определяем действие (покупка или продажа)
             if await self.should_buy(signature):
                 logger.info(f"[Фолловер: {follower}] Покупает токены на основе транзакции {signature}")
-                #await self.solana_client.buy_token_by_signature(signature)
+                self.solana_client.buy_token_by_signature(signature)
             elif await self.should_sell(signature):
                 logger.info(f"[Фолловер: {follower}] Продаёт токены на основе транзакции {signature}")
-                #await self.solana_client.sell_token_by_signature(signature)
+                self.solana_client.sell_token_by_signature(signature)
             else:
                 logger.info(f"[Фолловер: {follower}] Не выполняет никаких действий для транзакции {signature}")
 
