@@ -7,4 +7,5 @@ __all__ = [
     "SolanaClient",
     "get_bonding_curve_address",
     "find_associated_bonding_curve",
+    "SolanaMonitor"
 ]

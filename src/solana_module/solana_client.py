@@ -490,4 +490,91 @@ class SolanaClient:
             return 0
 
 
+    async def buy_token_by_signature(self, signature: str):
+        """
+        Повторяет покупку токена, используя параметры из указанной транзакции.
+        """
+        try:
+            # Получение информации о транзакции
+            transaction_info = await send_request_with_rate_limit(self.client, self.client.get_transaction, signature)
+            if not transaction_info or not transaction_info.value:
+                logger.error("Не удалось получить данные транзакции.")
+                return
 
+            # Парсинг параметров транзакции
+            transaction_data = transaction_info.value.transaction
+            instructions = transaction_data.message.instructions
+
+            for ix in instructions:
+                if ix.program_id == self.PUMP_PROGRAM:
+                    # Распаковка данных транзакции
+                    discriminator, token_amount_packed, max_amount_packed = struct.unpack("<QQQ", bytes(ix.data))
+                    if discriminator != 16927863322537952870:
+                        logger.error("Подпись не соответствует ожидаемой транзакции покупки.")
+                        return
+
+                    token_amount = token_amount_packed / (10**TOKEN_DECIMALS)
+                    max_amount = max_amount_packed
+
+                    # Получение аккаунтов из транзакции
+                    accounts = [AccountMeta(pubkey=Pubkey(acc), is_signer=False, is_writable=False) for acc in ix.accounts]
+                    mint = accounts[2].pubkey
+                    bonding_curve = accounts[3].pubkey
+                    associated_bonding_curve = accounts[4].pubkey
+
+                    # Повторная покупка токенов
+                    return await self.buy_token(
+                        mint=mint,
+                        bonding_curve=bonding_curve,
+                        associated_bonding_curve=associated_bonding_curve,
+                        amount=token_amount,
+                        slippage=0.25
+                    )
+
+        except Exception as e:
+            logger.error(f"Ошибка повторного выполнения покупки токенов: {e}")
+
+
+    async def sell_token_by_signature(self, signature: str):
+        """
+        Повторяет продажу токена, используя параметры из указанной транзакции.
+        """
+        try:
+            # Получение информации о транзакции
+            transaction_info = await send_request_with_rate_limit(self.client, self.client.get_transaction, signature)
+            if not transaction_info or not transaction_info.value:
+                logger.error("Не удалось получить данные транзакции.")
+                return
+
+            # Парсинг параметров транзакции
+            transaction_data = transaction_info.value.transaction
+            instructions = transaction_data.message.instructions
+
+            for ix in instructions:
+                if ix.program_id == self.PUMP_PROGRAM:
+                    # Распаковка данных транзакции
+                    discriminator, token_amount_packed, min_sol_output_packed = struct.unpack("<QQQ", bytes(ix.data))
+                    if discriminator != 12502976635542562355:
+                        logger.error("Подпись не соответствует ожидаемой транзакции продажи.")
+                        return
+
+                    token_amount = token_amount_packed / (10**TOKEN_DECIMALS)
+                    min_sol_output = min_sol_output_packed / LAMPORTS_PER_SOL
+
+                    # Получение аккаунтов из транзакции
+                    accounts = [AccountMeta(pubkey=Pubkey(acc), is_signer=False, is_writable=False) for acc in ix.accounts]
+                    mint = accounts[2].pubkey
+                    bonding_curve = accounts[3].pubkey
+                    associated_bonding_curve = accounts[4].pubkey
+
+                    # Повторная продажа токенов
+                    return await self.sell_token(
+                        mint=mint,
+                        bonding_curve=bonding_curve,
+                        associated_bonding_curve=associated_bonding_curve,
+                        token_amount=token_amount,
+                        min_amount=min_sol_output
+                    )
+
+        except Exception as e:
+            logger.error(f"Ошибка повторного выполнения продажи токенов: {e}")

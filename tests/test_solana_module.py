@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 async def main():
     try:
         # Инициализация клиента с заданным compute_unit_price
-        compute_unit_price = 100000  # Например, 15,000,000 лампортов за вычислительную единицу
+        compute_unit_price = 1000000  # Например, 15,000,000 лампортов за вычислительную единицу
         client = SolanaClient(compute_unit_price=compute_unit_price)
 
         # Определение адреса mint токена
@@ -41,7 +41,7 @@ async def main():
         logger.info(f"Покупка токенов на сумму {amount_sol:.6f} SOL с допустимым слиппейджем {slippage*100:.1f}%...")
 
         # Выполнение покупки токенов
-        # await client.buy_token(mint, bonding_curve_address, associated_bonding_curve, amount_sol, slippage)
+        await client.buy_token(mint, bonding_curve_address, associated_bonding_curve, amount_sol, slippage)
 
         # Получение списка токенов аккаунта
         account_pubkey = client.payer.pubkey()
@@ -49,13 +49,13 @@ async def main():
         logger.info(f"Аккаунт {account_pubkey} имеет {len(tokens)} токенов: {[str(token) for token in tokens]}")
 
         # Параметры продажи токенов
-        token_amount = 10  # Количество токенов для продажи
-        min_amount_sol = 0  # Минимальная сумма SOL, которую ожидаете получить
+        token_amount = 1  # Количество токенов для продажи
+        min_amount_sol = 0.0001 # Минимальная сумма SOL, которую ожидаете получить
 
         logger.info(f"Продажа {token_amount} токенов за минимум {min_amount_sol} SOL...")
         
         # Выполнение продажи токенов
-        await client.sell_token(mint, bonding_curve_address, associated_bonding_curve, token_amount, min_amount_sol)
+        #await client.sell_token(mint, bonding_curve_address, associated_bonding_curve, token_amount, min_amount_sol)
 
     except Exception as e:
         logger.error(f"Произошла ошибка в main: {e}")
