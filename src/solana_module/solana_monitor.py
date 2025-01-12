@@ -1,236 +1,163 @@
 import asyncio
-import requests
-import time
+import json
 import logging
-import struct
-from threading import Thread
-from typing import List, Optional, Dict, Set
-from solders.signature import Signature  # Импортируем Signature
-from .solana_client import SolanaClient
-import hashlib
-import base58
+import websockets
+from typing import Set, Dict
+from dotenv import load_dotenv
+import os
 
-def sighash(namespace: str, name: str) -> bytes:
-    """
-    Вычисляет дискриминатор на основе пространства имен и имени операции.
+load_dotenv()
 
-    Args:
-        namespace (str): Пространство имен (например, "global").
-        name (str): Имя операции (например, "buy").
+# Helius WebSocket Configuration
+WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={os.getenv('API_KEY')}"
 
-    Returns:
-        bytes: Первые 8 байт SHA256-хэша от строки "<namespace>:<name>".
-    """
-    preimage = f"{namespace}:{name}".encode("utf-8")
-    full_hash = hashlib.sha256(preimage).digest()
-    return full_hash[:8]
-
-# Пример использования
-buy_discriminator = sighash("global", "buy")
-sell_discriminator = sighash("global", "sell")
-
-print(f"BUY_DISCRIMINATOR: {buy_discriminator.hex()}")
-print(f"SELL_DISCRIMINATOR: {sell_discriminator.hex()}")
-
-
-# Настройка логирования
+# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 class SolanaMonitor:
-    def __init__(self, solana_client: SolanaClient, solana_url: str = "https://api.mainnet-beta.solana.com", request_timeout: int = 10):
-        self.solana_url = solana_url
-        self.request_timeout = request_timeout
+    def __init__(self):
         self.leader_follower_map: Dict[str, Set[str]] = {}
-        self.seen_signatures: Dict[str, Set[str]] = {}
-        self.total_transactions_processed = 0  # Счётчик обработанных транзакций
-        self.monitor_thread = None
+        self.total_transactions_processed = 0
         self.is_monitoring = False
-        self.solana_client = solana_client
+        self.tasks: Dict[str, asyncio.Task] = {}  # Map leader to its monitoring task
 
-    async def get_signatures_for_address(self, account: str, before: Optional[str] = None, limit: int = 1) -> List[dict]:
+    async def connect_and_subscribe(self, address: str):
         """
-        Получение списка транзакций для аккаунта.
+        Connect to Helius WebSocket and subscribe to logs for the given address.
+        Reconnects automatically if the connection is lost.
         """
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getSignaturesForAddress",
-            "params": [
-                account,
-                {"limit": limit, "before": before} if before else {"limit": limit}
-            ]
-        }
+        while self.is_monitoring:
+            try:
+                logger.info(f"Connecting to Helius WebSocket for address: {address}")
+                async with websockets.connect(WS_URL) as websocket:
+                    # Prepare the subscription payload
+                    subscribe_payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "logsSubscribe",
+                        "params": [
+                            {"mentions": [address]},
+                            {"commitment": "finalized"}
+                        ]
+                    }
+                    await websocket.send(json.dumps(subscribe_payload))
+                    logger.info(f"Subscribed to logs for address: {address}")
 
-        try:
-            response = requests.post(self.solana_url, json=payload, headers=headers, timeout=self.request_timeout)
-            response.raise_for_status()
-            return response.json().get("result", [])
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ошибка при запросе списка транзакций для {account}: {e}")
-            return []
+                    # Process incoming logs
+                    while self.is_monitoring:
+                        response = await websocket.recv()
+                        data = json.loads(response)
+                        await self.process_transaction(address, data)
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(f"WebSocket connection for {address} closed: {e}. Reconnecting...")
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error in WebSocket connection for {address}: {e}. Retrying...")
+                await asyncio.sleep(5)
 
-    async def process_leader_transaction(self, leader: str, signature: str) -> None:
+    async def process_transaction(self, leader: str, transaction: dict):
         """
-        Обработка транзакции лидера и уведомление фолловеров.
+        Process a single transaction from the WebSocket stream.
         """
         self.total_transactions_processed += 1
-        followers = self.leader_follower_map.get(leader, set())
-        logger.info(
-            f"[Лидер: {leader}] Обнаружена транзакция: {signature}. "
-            f"Всего фолловеров: {len(followers)}. "
-            f"Общее количество обработанных транзакций: {self.total_transactions_processed}."
-        )
 
-        for follower in followers:
-            await self.process_follower_reaction(follower, leader, signature)
-
-    async def process_follower_reaction(self, follower: str, leader: str, signature: str) -> None:
-        """
-        Реакция фолловера на транзакцию лидера.
-        """
         try:
-            logger.info(
-                f"[Фолловер: {follower}] Реагирует на транзакцию {signature} лидера {leader}. "
-                f"Время реакции: {time.strftime('%Y-%m-%d %H:%M:%S')}."
-            )
+            result = transaction.get("params", {}).get("result", {}).get("value", {})
+            signature = result.get("signature", "Unknown")
+            logs = result.get("logs", [])
 
-            # Определяем действие (покупка или продажа)
-            if await self.should_buy(signature):
-                logger.info(f"[Фолловер: {follower}] Покупает токены на основе транзакции {signature}")
-                self.solana_client.buy_token_by_signature(signature)
-            elif await self.should_sell(signature):
-                logger.info(f"[Фолловер: {follower}] Продаёт токены на основе транзакции {signature}")
-                self.solana_client.sell_token_by_signature(signature)
-            else:
-                logger.info(f"[Фолловер: {follower}] Не выполняет никаких действий для транзакции {signature}")
+            # Infer transaction type from logs
+            tx_type = self.infer_type_from_logs(logs)
+
+            logger.info(f"Transaction {signature} of type {tx_type} for leader {leader}")
+
+            # Notify followers based on transaction type
+            if tx_type in {"BUY", "SELL"}:
+                followers = self.leader_follower_map.get(leader, set())
+                for follower in followers:
+                    logger.info(f"Notifying follower {follower} of transaction {signature} ({tx_type})")
 
         except Exception as e:
-            logger.error(f"[Ошибка] Фолловер {follower} не смог обработать транзакцию {signature}: {e}")
+            logger.error(f"Error processing transaction: {e}")
 
-    async def should_buy(self, signature: str) -> bool:
+    def infer_type_from_logs(self, logs: list) -> str:
         """
-        Логика определения, нужно ли покупать токены.
+        Infer transaction type from logs.
         """
-        try:
-            signature = Signature.from_string(signature)
-            # Получаем информацию о транзакции
-            transaction_info = await self.solana_client.client.get_transaction(signature)
-            if not transaction_info or not transaction_info.value or not transaction_info.value.transaction:
-                logger.error(f"Транзакция {signature} отсутствует или пуста.")
-                return False
+        if not logs:
+            return "UNKNOWN"
 
-            encoded_transaction = transaction_info.value.transaction.transaction
-            if not hasattr(encoded_transaction, "message"):
-                logger.error(f"Неверная структура данных для транзакции {signature}: {encoded_transaction}")
-                return False
+        for log in logs:
+            if isinstance(log, str):
+                if "Instruction: Buy" in log:
+                    return "BUY"
+                if "Instruction: Sell" in log:
+                    return "SELL"
 
-            message = encoded_transaction.message
-            if not hasattr(message, "instructions") or not hasattr(message, "account_keys"):
-                logger.error(f"Отсутствуют ключи instructions или account_keys в транзакции {signature}.")
-                return False
+        return "UNKNOWN"
 
-            # Дискриминатор для покупки
-            BUY_DISCRIMINATOR = sighash("global", "buy")
-
-            # Проверяем инструкции на наличие дискриминатора покупки
-            for ix in message.instructions:
-                program_id = str(message.account_keys[ix.program_id_index]).split('\n')[0]
-                if program_id == str(self.solana_client.PUMP_PROGRAM):
-                    data = base58.b58decode(ix.data).hex()
-                    if data.startswith(BUY_DISCRIMINATOR.hex()):
-                        return True
-            return False
-        except Exception as e:
-            logger.error(f"Ошибка анализа транзакции для покупки: {e}")
-            return False
-
-
-    async def should_sell(self, signature: str) -> bool:
+    def add_leader(self, leader: str):
         """
-        Логика определения, нужно ли продавать токены.
+        Add a leader to monitor. Starts monitoring immediately if monitoring is active.
         """
-        try:
-            signature = Signature.from_string(signature)
-            # Получаем информацию о транзакции
-            transaction_info = await self.solana_client.client.get_transaction(signature)
-            if not transaction_info or not transaction_info.value or not transaction_info.value.transaction:
-                logger.error(f"Транзакция {signature} отсутствует или пуста.")
-                return False
-
-            encoded_transaction = transaction_info.value.transaction.transaction
-            if not hasattr(encoded_transaction, "message"):
-                logger.error(f"Неверная структура данных для транзакции {signature}: {encoded_transaction}")
-                return False
-
-            message = encoded_transaction.message
-            if not hasattr(message, "instructions") or not hasattr(message, "account_keys"):
-                logger.error(f"Отсутствуют ключи instructions или account_keys в транзакции {signature}.")
-                return False
-
-            # Дискриминатор для продажи
-            SELL_DISCRIMINATOR = sighash("global", "sell")
-
-            # Проверяем инструкции на наличие дискриминатора продажи
-            for ix in message.instructions:
-                program_id = message.account_keys[ix.program_id_index]
-                if program_id == str(self.solana_client.PUMP_PROGRAM):
-                    data = base58.b58decode(ix.data).hex()
-                    print(data)
-                    print(SELL_DISCRIMINATOR.hex())
-                    exit()
-                    if data.startswith(SELL_DISCRIMINATOR.hex()):
-                        return True
-            return False
-        except Exception as e:
-            logger.error(f"Ошибка анализа транзакции для продажи: {e}")
-            return False
-
-    async def monitor_leaders(self, interval: int = 5) -> None:
-        """
-        Основной цикл мониторинга лидеров.
-        """
-        self.is_monitoring = True
-        while self.is_monitoring:
-            for leader in list(self.leader_follower_map.keys()):
-                try:
-                    signatures = await self.get_signatures_for_address(leader)
-                    if leader not in self.seen_signatures:
-                        self.seen_signatures[leader] = set()
-
-                    for tx in signatures:
-                        signature = tx["signature"]
-                        if signature not in self.seen_signatures[leader]:
-                            self.seen_signatures[leader].add(signature)
-                            logger.info(f"[Мониторинг] Новая транзакция для лидера {leader}: {signature}.")
-                            await self.process_leader_transaction(leader, signature)
-                except Exception as e:
-                    logger.error(f"Ошибка мониторинга для лидера {leader}: {e}")
-                
-                await asyncio.sleep(interval)
-
-    def add_leader(self, leader: str) -> None:
         if leader not in self.leader_follower_map:
             self.leader_follower_map[leader] = set()
-            logger.info(f"[Добавление лидера] Лидер {leader} добавлен для мониторинга.")
+            logger.info(f"Added leader {leader} for monitoring.")
 
-    def add_relationship(self, leader: str, follower: str) -> None:
+            # Start monitoring the new leader if the monitor is active
+            if self.is_monitoring and leader not in self.tasks:
+                task = asyncio.create_task(self.connect_and_subscribe(leader))
+                self.tasks[leader] = task
+                logger.info(f"Started monitoring leader {leader}.")
+
+    def add_relationship(self, leader: str, follower: str):
+        """
+        Add a follower for a specific leader.
+        """
         if leader not in self.leader_follower_map:
             self.add_leader(leader)
         self.leader_follower_map[leader].add(follower)
-        logger.info(f"[Связь] Фолловер {follower} добавлен к лидеру {leader}.")
+        logger.info(f"Added follower {follower} for leader {leader}.")
 
-    async def start_monitoring(self, interval: int = 5) -> None:
-        await self.monitor_leaders(interval)
+    async def start_monitoring(self):
+        """
+        Start monitoring all leaders in separate WebSocket connections.
+        """
+        self.is_monitoring = True
+        for leader in self.leader_follower_map.keys():
+            if leader not in self.tasks:
+                task = asyncio.create_task(self.connect_and_subscribe(leader))
+                self.tasks[leader] = task
+        logger.info(f"Started monitoring {len(self.tasks)} leaders.")
 
+    async def stop_monitoring(self):
+        """
+        Stop all monitoring tasks gracefully.
+        """
+        self.is_monitoring = False
+        for task in self.tasks.values():
+            task.cancel()
+        await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        logger.info("Stopped all monitoring tasks.")
+        self.tasks.clear()
 
+# Run the monitor
 if __name__ == "__main__":
-    solana_client = SolanaClient(100000)
-    monitor = SolanaMonitor(solana_client)
+    monitor = SolanaMonitor()
 
-    # Добавление лидеров и фолловеров
-    monitor.add_leader("3cLY4cPHdsDh1v7UyawbJNkPSYkw26GE7jkV8Zq1z3di")
-    monitor.add_relationship("3cLY4cPHdsDh1v7UyawbJNkPSYkw26GE7jkV8Zq1z3di", "follower1")
+    async def main():
+        try:
+            # Add initial leaders and followers
+            monitor.add_leader("2heHTw2ywe7kzA21F1XBF4unFEWrkMRogcHpT3uEyp56")
+            monitor.add_relationship("3cLY4cPHdsDh1v7UyawbJNkPSYkw26GE7jkV8Zq1z3di", "follower1")
 
-    asyncio.run(monitor.start_monitoring(interval=5))
+            # Start monitoring
+            await monitor.start_monitoring()
+            await asyncio.sleep(100)
+        except KeyboardInterrupt:
+            logger.info("Interrupted! Stopping monitor...")
+        finally:
+            await monitor.stop_monitoring()
+
+    asyncio.run(main())
