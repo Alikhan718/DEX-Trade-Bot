@@ -37,6 +37,8 @@ import httpx  # Используется в обработке исключен�
 from .config import COMPUTE_UNIT_PRICE
 from .utils import get_bonding_curve_address, find_associated_bonding_curve
 
+from typing import Optional, Dict
+
 # Configure Logging
 logging.basicConfig(
     level=logging.INFO,  # Измените на DEBUG, чтобы видеть RPC ответы
@@ -578,3 +580,45 @@ class SolanaClient:
 
         except Exception as e:
             logger.error(f"Ошибка повторного выполнения продажи токенов: {e}")
+
+    async def get_transaction(self, signature: str) -> Optional[Dict]:
+        """
+        Получить информацию о транзакции по её сигнатуре
+        """
+        try:
+            # Получаем информацию о транзакции
+            response = await self.client.get_transaction(
+                signature,
+                encoding="jsonParsed",
+                max_supported_transaction_version=0
+            )
+            
+            if not response or "result" not in response:
+                logger.error(f"Failed to get transaction {signature}")
+                return None
+
+            transaction = response["result"]
+            if not transaction:
+                return None
+
+            # Извлекаем сумму в SOL из транзакции
+            amount_sol = 0
+            for instruction in transaction.get("transaction", {}).get("message", {}).get("instructions", []):
+                if instruction.get("program") == str(PUMP_PROGRAM_ID):
+                    # Находим инструкцию с передачей SOL
+                    for inner_instruction in transaction.get("meta", {}).get("innerInstructions", []):
+                        for inner in inner_instruction.get("instructions", []):
+                            if inner.get("program") == "system" and inner.get("parsed", {}).get("type") == "transfer":
+                                amount_lamports = int(inner.get("parsed", {}).get("info", {}).get("lamports", 0))
+                                amount_sol = amount_lamports / 10**9  # Конвертируем lamports в SOL
+
+            return {
+                "signature": signature,
+                "amount_sol": amount_sol,
+                "timestamp": transaction.get("blockTime"),
+                "success": transaction.get("meta", {}).get("err") is None
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting transaction {signature}: {e}")
+            return None

@@ -17,6 +17,7 @@ from ..services.token_info import TokenInfoService
 from ..services.rugcheck import RugCheckService
 from .middleware import DatabaseMiddleware, ServicesMiddleware
 from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell
+from .services.copy_trade_service import CopyTradeService
 
 logger = setup_logging()
 
@@ -33,6 +34,7 @@ class SolanaDEXBot:
             self.solana_service = SolanaService()
             self.smart_money_tracker = SmartMoneyTracker()
             self.rugcheck_service = RugCheckService()
+            self.copy_trade_service = CopyTradeService()
             
             # Setup database
             self.engine = create_async_engine(
@@ -101,12 +103,19 @@ class SolanaDEXBot:
             logger.info("Initializing database...")
             await self.init_db()
             
+            # Start copy trade service
+            logger.info("Starting copy trade service...")
+            async with self.Session() as session:
+                await self.copy_trade_service.start(session)
+            
             logger.info("Starting bot polling")
             await self.dp.start_polling(self.bot)
         except Exception as e:
             logger.error(f"Bot polling error: {e}")
         finally:
             # Cleanup
+            if hasattr(self, 'copy_trade_service'):
+                await self.copy_trade_service.stop()
             if hasattr(self, 'rugcheck_service'):
                 await self.rugcheck_service.close()
             if hasattr(self, 'engine'):

@@ -95,3 +95,60 @@ class Trade(Base):
     extra_data = Column(JSONB, default={})  # Additional trade data in JSON format
     
     user = relationship("User", backref="trades") 
+
+class CopyTrade(Base):
+    __tablename__ = "copy_trades"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    name = Column(String, nullable=False)
+    wallet_address = Column(String(44), nullable=False)
+    is_active = Column(Boolean, default=True)
+    
+    # Настройки копирования
+    copy_percentage = Column(Float, default=100.0)
+    min_amount = Column(Float, default=0.0)
+    max_amount = Column(Float, nullable=True)  # NULL = без ограничений
+    total_amount = Column(Float, nullable=True)  # NULL = без ограничений
+    max_copies_per_token = Column(Integer, nullable=True)  # NULL = без ограничений
+    copy_sells = Column(Boolean, default=True)
+    retry_count = Column(Integer, default=1)
+    
+    # Настройки транзакций
+    buy_gas_fee = Column(Integer, default=100000)
+    sell_gas_fee = Column(Integer, default=100000)
+    buy_slippage = Column(Float, default=1.0)
+    sell_slippage = Column(Float, default=1.0)
+    anti_mev = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", backref="copy_trades")
+    transactions = relationship("CopyTradeTransaction", backref="copy_trade")
+
+class ExcludedToken(Base):
+    __tablename__ = "excluded_tokens"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    token_address = Column(String(44), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", backref="excluded_tokens")
+
+class CopyTradeTransaction(Base):
+    __tablename__ = "copy_trade_transactions"
+    
+    id = Column(Integer, primary_key=True)
+    copy_trade_id = Column(Integer, ForeignKey('copy_trades.id'))
+    token_address = Column(String(44))
+    original_signature = Column(String)
+    copied_signature = Column(String)
+    transaction_type = Column(String)  # BUY/SELL
+    status = Column(String)  # SUCCESS/FAILED
+    error_message = Column(String)
+    amount_sol = Column(Float)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow) 

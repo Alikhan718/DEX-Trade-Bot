@@ -5,6 +5,8 @@ import websockets
 from typing import Set, Dict
 from dotenv import load_dotenv
 import os
+from .solana_client import SolanaClient
+from solders.keypair import Keypair
 
 load_dotenv()
 
@@ -17,10 +19,12 @@ logger = logging.getLogger(__name__)
 
 class SolanaMonitor:
     def __init__(self):
+        self.client = SolanaClient(compute_unit_price=os.getenv('COMPUTE_UNIT_PRICE'))
         self.leader_follower_map: Dict[str, Set[str]] = {}
         self.total_transactions_processed = 0
         self.is_monitoring = False
         self.tasks: Dict[str, asyncio.Task] = {}  # Map leader to its monitoring task
+        self.transaction_callback = None  # Add callback field
 
     async def connect_and_subscribe(self, address: str):
         """
@@ -63,23 +67,41 @@ class SolanaMonitor:
         self.total_transactions_processed += 1
 
         try:
+            logger.info(f"Raw transaction data: {transaction}")
+            
             result = transaction.get("params", {}).get("result", {}).get("value", {})
             signature = result.get("signature", "Unknown")
             logs = result.get("logs", [])
 
+            logger.info(f"Processing transaction {signature}")
+            logger.info(f"Transaction logs: {logs}")
+
             # Infer transaction type from logs
             tx_type = self.infer_type_from_logs(logs)
 
-            logger.info(f"Transaction {signature} of type {tx_type} for leader {leader}")
+            if tx_type == "BUY":
+                logger.info(f"BUY transaction detected: {signature}")
+                
+                # Call transaction callback with signature
+                if self.transaction_callback:
+                    logger.info(f"Calling transaction callback for BUY transaction")
+                    try:
+                        await self.transaction_callback(leader, tx_type, signature, None)
+                        logger.info("Transaction callback completed successfully")
+                    except Exception as e:
+                        logger.error(f"Error in transaction callback: {e}")
+                else:
+                    logger.warning("No transaction callback set")
 
-            # Notify followers based on transaction type
-            if tx_type in {"BUY", "SELL"}:
+                # Notify followers
                 followers = self.leader_follower_map.get(leader, set())
                 for follower in followers:
                     logger.info(f"Notifying follower {follower} of transaction {signature} ({tx_type})")
 
         except Exception as e:
             logger.error(f"Error processing transaction: {e}")
+            logger.error(f"Transaction data: {transaction}")
+            raise
 
     def infer_type_from_logs(self, logs: list) -> str:
         """
@@ -142,22 +164,7 @@ class SolanaMonitor:
         logger.info("Stopped all monitoring tasks.")
         self.tasks.clear()
 
-# Run the monitor
-if __name__ == "__main__":
-    monitor = SolanaMonitor()
-
-    async def main():
-        try:
-            # Add initial leaders and followers
-            monitor.add_leader("2heHTw2ywe7kzA21F1XBF4unFEWrkMRogcHpT3uEyp56")
-            monitor.add_relationship("3cLY4cPHdsDh1v7UyawbJNkPSYkw26GE7jkV8Zq1z3di", "follower1")
-
-            # Start monitoring
-            await monitor.start_monitoring()
-            await asyncio.sleep(100)
-        except KeyboardInterrupt:
-            logger.info("Interrupted! Stopping monitor...")
-        finally:
-            await monitor.stop_monitoring()
-
-    asyncio.run(main())
+    def set_transaction_callback(self, callback):
+        """Set the callback function to be called when a transaction is detected."""
+        self.transaction_callback = callback
+        logger.info("Transaction callback set: " + callback.__name__)
