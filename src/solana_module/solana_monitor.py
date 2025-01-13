@@ -67,40 +67,61 @@ class SolanaMonitor:
         self.total_transactions_processed += 1
 
         try:
-            logger.info(f"Raw transaction data: {transaction}")
+            logger.info(f"[MONITOR] Processing transaction for leader {leader}")
+            logger.info(f"[MONITOR] Raw transaction data: {json.dumps(transaction, indent=2)}")
             
             result = transaction.get("params", {}).get("result", {}).get("value", {})
             signature = result.get("signature", "Unknown")
             logs = result.get("logs", [])
 
-            logger.info(f"Processing transaction {signature}")
-            logger.info(f"Transaction logs: {logs}")
+            logger.info(f"[MONITOR] Extracted signature: {signature}")
+            logger.info(f"[MONITOR] Transaction logs: {json.dumps(logs, indent=2)}")
 
             # Infer transaction type from logs
             tx_type = self.infer_type_from_logs(logs)
+            logger.info(f"[MONITOR] Inferred transaction type: {tx_type}")
 
             if tx_type == "BUY":
-                logger.info(f"BUY transaction detected: {signature}")
+                logger.info(f"[MONITOR] BUY transaction detected: {signature}")
+                
+                # Extract token address from transaction
+                token_address = None
+                try:
+                    tx_info = await self.client.get_transaction(signature)
+                    print("tx_infooooooo", tx_info)
+                    if tx_info:
+                        # Get mint address from accounts[2] (third account in instruction)
+                        token_address = tx_info["token_address"]
+                        logger.info(f"[MONITOR] Extracted token address: {token_address}")
+                except Exception as e:
+                    logger.error(f"[MONITOR] Error extracting token address: {str(e)}")
                 
                 # Call transaction callback with signature
                 if self.transaction_callback:
-                    logger.info(f"Calling transaction callback for BUY transaction")
+                    logger.info(f"[MONITOR] Calling transaction callback for BUY transaction")
                     try:
-                        await self.transaction_callback(leader, tx_type, signature, None)
-                        logger.info("Transaction callback completed successfully")
+                        await self.transaction_callback(leader, tx_type, signature, token_address)
+                        logger.info("[MONITOR] Transaction callback completed successfully")
                     except Exception as e:
-                        logger.error(f"Error in transaction callback: {e}")
+                        logger.error(f"[MONITOR] Error in transaction callback: {str(e)}")
+                        logger.error(f"[MONITOR] Error details: {type(e).__name__}")
+                        import traceback
+                        logger.error(f"[MONITOR] Traceback: {traceback.format_exc()}")
                 else:
-                    logger.warning("No transaction callback set")
+                    logger.warning("[MONITOR] No transaction callback set")
 
                 # Notify followers
                 followers = self.leader_follower_map.get(leader, set())
+                logger.info(f"[MONITOR] Notifying {len(followers)} followers for leader {leader}")
                 for follower in followers:
-                    logger.info(f"Notifying follower {follower} of transaction {signature} ({tx_type})")
+                    logger.info(f"[MONITOR] Notifying follower {follower} of transaction {signature} ({tx_type})")
 
         except Exception as e:
-            logger.error(f"Error processing transaction: {e}")
-            logger.error(f"Transaction data: {transaction}")
+            logger.error(f"[MONITOR] Error processing transaction: {str(e)}")
+            logger.error(f"[MONITOR] Error type: {type(e).__name__}")
+            logger.error(f"[MONITOR] Transaction data: {json.dumps(transaction, indent=2)}")
+            import traceback
+            logger.error(f"[MONITOR] Traceback: {traceback.format_exc()}")
             raise
 
     def infer_type_from_logs(self, logs: list) -> str:

@@ -14,6 +14,7 @@ from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
+from solders.signature import Signature
 from solders.instruction import Instruction, AccountMeta
 from solders.compute_budget import set_compute_unit_price
 from solana.transaction import Transaction
@@ -37,7 +38,7 @@ import httpx  # Используется в обработке исключен�
 from .config import COMPUTE_UNIT_PRICE
 from .utils import get_bonding_curve_address, find_associated_bonding_curve
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 
 # Configure Logging
 logging.basicConfig(
@@ -581,44 +582,103 @@ class SolanaClient:
         except Exception as e:
             logger.error(f"Ошибка повторного выполнения продажи токенов: {e}")
 
-    async def get_transaction(self, signature: str) -> Optional[Dict]:
+    async def get_transaction(self, signature: Union[str, Signature]) -> Optional[Dict]:
         """
-        Получить информацию о транзакции по её сигнатуре
+        Get transaction information by signature
+        
+        Args:
+            signature: Transaction signature as string or Signature object
         """
         try:
-            # Получаем информацию о транзакции
-            response = await self.client.get_transaction(
-                signature,
-                encoding="jsonParsed",
-                max_supported_transaction_version=0
+            logger.info(f"[CLIENT] Getting transaction info for signature: {signature}")
+            
+            # Convert string signature to Signature object if needed
+            if isinstance(signature, str):
+                signature_obj = Signature.from_string(signature)
+            else:
+                signature_obj = signature  # Already a Signature object
+            
+            # Get transaction info
+            tx_info = await send_request_with_rate_limit(
+                self.client,
+                self.client.get_transaction,
+                signature_obj
             )
             
-            if not response or "result" not in response:
-                logger.error(f"Failed to get transaction {signature}")
+            if not tx_info or not tx_info.value:
+                logger.error(f"[CLIENT] No transaction info found for signature: {signature}")
                 return None
 
-            transaction = response["result"]
-            if not transaction:
-                return None
-
-            # Извлекаем сумму в SOL из транзакции
-            amount_sol = 0
-            for instruction in transaction.get("transaction", {}).get("message", {}).get("instructions", []):
-                if instruction.get("program") == str(PUMP_PROGRAM_ID):
-                    # Находим инструкцию с передачей SOL
-                    for inner_instruction in transaction.get("meta", {}).get("innerInstructions", []):
-                        for inner in inner_instruction.get("instructions", []):
-                            if inner.get("program") == "system" and inner.get("parsed", {}).get("type") == "transfer":
-                                amount_lamports = int(inner.get("parsed", {}).get("info", {}).get("lamports", 0))
-                                amount_sol = amount_lamports / 10**9  # Конвертируем lamports в SOL
-
-            return {
-                "signature": signature,
-                "amount_sol": amount_sol,
-                "timestamp": transaction.get("blockTime"),
-                "success": transaction.get("meta", {}).get("err") is None
+            logger.info(f"[CLIENT] Successfully retrieved transaction info")
+            
+            # Extract pre and post balances
+            pre_balances = tx_info.value.transaction.meta.pre_balances
+            post_balances = tx_info.value.transaction.meta.post_balances
+            
+            # Extract mint address from transaction
+            token_address = None
+            if tx_info.value.transaction.transaction.message.account_keys:
+                # В BUY транзакции mint находится в account_keys[11]
+                # Это можно увидеть из логов, где mint = "55YanwmkJQrk2SiZRKNKVbLVz7Ht33zg6RU7uYvipump"
+                token_address = str(tx_info.value.transaction.transaction.message.account_keys[11])
+                logger.info(f"[CLIENT] Extracted token address: {token_address}")
+            
+            # Convert to dict before JSON serialization
+            tx_info_dict = {
+                "amount_sol": abs(pre_balances[0] - post_balances[0]) if pre_balances and post_balances else 0,
+                "token_address": token_address,
+                "raw_data": {
+                    "pre_balances": pre_balances,
+                    "post_balances": post_balances,
+                    "slot": tx_info.value.slot,
+                    "block_time": tx_info.value.block_time
+                }
             }
-
+            
+            logger.debug(f"[CLIENT] Transaction info: {json.dumps(tx_info_dict, indent=2)}")
+            return tx_info_dict
+            
         except Exception as e:
-            logger.error(f"Error getting transaction {signature}: {e}")
+            logger.error(f"[CLIENT] Error getting transaction info: {str(e)}")
+            logger.error(traceback.format_exc())
             return None
+
+    async def get_sol_balance(self, wallet_address: str) -> float:
+        """
+        Get SOL balance for a wallet
+        
+        Args:
+            wallet_address: The wallet address to check balance for
+            
+        Returns:
+            float: Balance in SOL
+        """
+        try:
+            logger.info(f"[CLIENT] Getting SOL balance for wallet: {wallet_address}")
+            
+            # Convert address string to Pubkey
+            pubkey = Pubkey.from_string(wallet_address)
+            
+            # Get balance
+            balance = await send_request_with_rate_limit(
+                self.client,
+                self.client.get_balance,
+                pubkey
+            )
+            
+            if balance is None:
+                logger.error(f"[CLIENT] Failed to get balance for wallet: {wallet_address}")
+                return 0
+            
+            # Convert lamports to SOL
+            balance_sol = balance.value / LAMPORTS_PER_SOL
+            logger.info(f"[CLIENT] Wallet {wallet_address} has {balance_sol} SOL")
+            
+            return balance_sol
+            
+        except Exception as e:
+            logger.error(f"[CLIENT] Error getting SOL balance: {str(e)}")
+            logger.error(f"[CLIENT] Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"[CLIENT] Traceback: {traceback.format_exc()}")
+            return 0

@@ -117,7 +117,7 @@ class CopyTrade(Base):
     # Настройки транзакций
     buy_gas_fee = Column(Integer, default=100000)
     sell_gas_fee = Column(Integer, default=100000)
-    buy_slippage = Column(Float, default=1.0)
+    buy_slippage = Column(Float, default=5.0)
     sell_slippage = Column(Float, default=1.0)
     anti_mev = Column(Boolean, default=False)
     
