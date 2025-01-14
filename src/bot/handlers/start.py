@@ -1,12 +1,14 @@
 import logging
 from aiogram import Router, types
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
 from datetime import datetime
 import uuid
 from solders.keypair import Keypair
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from aiogram import F
 
 from ...database.models import User
 from ...services.solana import SolanaService
@@ -15,9 +17,10 @@ from ..utils.user import get_real_user_id
 router = Router()
 logger = logging.getLogger(__name__)
 
-@router.message(Command("start"))
+# Высший приоритет - базовые команды
+@router.message(CommandStart(), flags={"priority": 1})
 async def show_main_menu(message: types.Message, session: AsyncSession, solana_service: SolanaService):
-    """Show main menu with wallet info"""
+    """Главное меню - самый высокий приоритет"""
     try:
         # Get real user ID
         user_id = get_real_user_id(message)
@@ -93,6 +96,10 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
                 InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
                 InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
             ],
+            # Auto-buy settings
+            [
+                InlineKeyboardButton(text="⚡️ Автобай", callback_data="auto_buy_settings")
+            ],
             # Trading features
             [
                 InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
@@ -134,9 +141,9 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
             "Пожалуйста, попробуйте позже или обратитесь в поддержку."
         )
 
-@router.message(Command("reset"))
+@router.message(Command("reset"), flags={"priority": 1})
 async def reset_user_data(message: types.Message, session: AsyncSession):
-    """Delete user data from database for testing"""
+    """Сброс данных - высокий приоритет"""
     try:
         user_id = get_real_user_id(message)
         stmt = select(User).where(User.telegram_id == user_id)
@@ -169,14 +176,16 @@ async def reset_user_data(message: types.Message, session: AsyncSession):
         logger.error(f"Error resetting user data: {e}")
         await message.answer("❌ Ошибка при удалении данных") 
 
-@router.callback_query(lambda c: c.data == "main_menu")
-async def back_to_main_menu(callback_query: types.CallbackQuery, session: AsyncSession, solana_service: SolanaService):
-    """Return to main menu"""
+# Возврат в главное меню - тоже высокий приоритет
+@router.callback_query(F.data == "main_menu", flags={"priority": 1})
+async def back_to_main_menu(callback_query: types.CallbackQuery, session: AsyncSession, solana_service: SolanaService, state: FSMContext):
+    """Возврат в главное меню"""
     try:
         user_id = get_real_user_id(callback_query)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
+        await state.clear()
         
         if not user:
             await callback_query.answer("❌ Пользователь не найден")
@@ -192,6 +201,10 @@ async def back_to_main_menu(callback_query: types.CallbackQuery, session: AsyncS
             [
                 InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
                 InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
+            ],
+            # Auto-buy settings
+            [
+                InlineKeyboardButton(text="⚡️ Автобай", callback_data="auto_buy_settings")
             ],
             # Trading features
             [

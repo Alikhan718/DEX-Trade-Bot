@@ -5,16 +5,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncio
+from aiogram import F
 
 from ...services.smart_money import SmartMoneyTracker
+from ..states import SmartMoneyStates
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 smart_money_tracker = SmartMoneyTracker()
-
-class SmartMoneyStates(StatesGroup):
-    waiting_for_token = State()
 
 def _is_valid_token_address(address: str) -> bool:
     """Проверяет валидность адреса токена"""
@@ -30,7 +29,26 @@ def _is_valid_token_address(address: str) -> bool:
     except Exception:
         return False
 
-@router.message(Command("smart"))
+# Приоритет 5 - аналитические функции
+@router.callback_query(F.data == "smart_money", flags={"priority": 5})
+async def on_smart_money_button(callback_query: types.CallbackQuery, state: FSMContext):
+    """Handle Smart Money button press"""
+    try:
+        await callback_query.message.edit_text(
+            "🧠 Smart Money Анализ\n\n"
+            "Отправьте адрес токена для анализа.\n"
+            "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
+            parse_mode="MARKDOWN",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ])
+        )
+        await state.set_state(SmartMoneyStates.waiting_for_token)
+    except Exception as e:
+        logger.error(f"Error in smart money button handler: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+@router.message(Command("smart"), flags={"priority": 5})
 async def handle_smart_money_command(message: types.Message):
     """Обработчик команды для получения smart money информации"""
     try:
@@ -92,24 +110,6 @@ async def handle_smart_money_command(message: types.Message):
             "❌ Произошла ошибка при анализе токена\n"
             "Пожалуйста, попробуйте позже или проверьте адрес токена"
         )
-
-@router.callback_query(lambda c: c.data == "smart_money")
-async def on_smart_money_button(callback_query: types.CallbackQuery, state: FSMContext):
-    """Handle Smart Money button press"""
-    try:
-        await callback_query.message.edit_text(
-            "🧠 Smart Money Анализ\n\n"
-            "Отправьте адрес токена для анализа.\n"
-            "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
-            parse_mode="MARKDOWN",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-            ])
-        )
-        await state.set_state(SmartMoneyStates.waiting_for_token)
-    except Exception as e:
-        logger.error(f"Error in smart money button handler: {e}")
-        await callback_query.answer("❌ Произошла ошибка")
 
 @router.message(SmartMoneyStates.waiting_for_token)
 async def handle_token_address_input(message: types.Message, state: FSMContext):

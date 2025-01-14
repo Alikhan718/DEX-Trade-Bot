@@ -3,31 +3,17 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...database.models import CopyTrade, ExcludedToken, User
 from ..services.copy_trade_service import CopyTradeService
+from ..states import CopyTradeStates
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-class CopyTradeStates(StatesGroup):
-    ENTER_NAME = State()
-    ENTER_ADDRESS = State()
-    ENTER_PERCENTAGE = State()
-    ENTER_MIN_AMOUNT = State()
-    ENTER_MAX_AMOUNT = State()
-    ENTER_TOTAL_AMOUNT = State()
-    ENTER_MAX_COPIES = State()
-    ENTER_BUY_GAS = State()
-    ENTER_SELL_GAS = State()
-    ENTER_BUY_SLIPPAGE = State()
-    ENTER_SELL_SLIPPAGE = State()
-    ENTER_EXCLUDED_TOKEN = State()
-
-@router.callback_query(F.data == "copy_trade")
+@router.callback_query(F.data == "copy_trade", flags={"priority": 4})
 async def show_copy_trade_menu(callback: CallbackQuery, session: AsyncSession):
     """Показать главное меню копитрейдинга со списком конфигураций"""
     # Получаем пользователя
