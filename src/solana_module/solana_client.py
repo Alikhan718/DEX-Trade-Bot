@@ -110,11 +110,12 @@ def is_rate_limit_error(exception):
     )
 
 class SolanaClient:
-    def __init__(self, compute_unit_price: int = COMPUTE_UNIT_PRICE):
+    def __init__(self, compute_unit_price: int = COMPUTE_UNIT_PRICE, private_key: Optional[str] = None):
         self.rpc_endpoint = os.getenv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
-        self.payer = self.load_keypair()
-        self.client = AsyncClient(self.rpc_endpoint)
         self.compute_unit_price = compute_unit_price
+        self.client = AsyncClient(self.rpc_endpoint)
+        self._private_key = private_key
+        self.payer = None  # Will be set on first use
 
         # Program addresses
         self.PUMP_PROGRAM = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
@@ -129,9 +130,54 @@ class SolanaClient:
 
     def load_keypair(self) -> Keypair:
         """
-        Загружает ключевую пару из конфигурации.
+        Loads keypair from provided private key
+        Raises ValueError if no private key was provided
         """
-        return Keypair.from_bytes(bytes([int(i) for i in os.getenv('SECRET_KEY').split(',')]))
+        try:
+            if not self.payer:
+                if not self._private_key:
+                    logger.error("[CLIENT] No private key provided")
+                    raise ValueError("Private key is required for transaction signing")
+                
+                logger.info("[CLIENT] Loading keypair from provided private key")
+                logger.debug(f"[CLIENT] Private key string: {self._private_key[:20]}...")  # Log first 20 chars for debugging
+                logger.debug(f"[CLIENT] Private key string length: {len(self._private_key)}")
+                
+                try:
+                    # Split and convert to integers
+                    key_parts = self._private_key.split(',')
+                    logger.debug(f"[CLIENT] Split private key into {len(key_parts)} parts")
+                    
+                    key_bytes = [int(i) for i in key_parts]
+                    logger.debug(f"[CLIENT] Converted to bytes array with length: {len(key_bytes)}")
+                    
+                    if len(key_bytes) != 64:
+                        logger.error(f"[CLIENT] Invalid key length: {len(key_bytes)} (expected 64)")
+                        raise ValueError(f"Invalid private key length: {len(key_bytes)}")
+                        
+                except Exception as e:
+                    logger.error(f"[CLIENT] Failed to parse private key string: {str(e)}")
+                    logger.error(f"[CLIENT] Key parts: {key_parts[:3]}... (showing first 3 parts)")
+                    raise ValueError("Failed to parse private key string") from e
+                
+                try:
+                    key_bytes_obj = bytes(key_bytes)
+                    logger.debug(f"[CLIENT] Created bytes object with length: {len(key_bytes_obj)}")
+                    
+                    self.payer = Keypair.from_bytes(key_bytes_obj)
+                    logger.info(f"[CLIENT] Keypair loaded successfully. Public key: {self.payer.pubkey()}")
+                except Exception as e:
+                    logger.error(f"[CLIENT] Failed to create keypair from bytes: {str(e)}")
+                    logger.error(f"[CLIENT] First few bytes: {key_bytes_obj[:10] if key_bytes_obj else None}")
+                    raise ValueError("Failed to create keypair from bytes") from e
+            
+            return self.payer
+            
+        except Exception as e:
+            logger.error(f"[CLIENT] Error loading keypair: {str(e)}")
+            logger.error(f"[CLIENT] Error type: {type(e).__name__}")
+            logger.error(traceback.format_exc())
+            raise
 
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
         """Creates associated token account for given mint if it doesn't exist."""
@@ -620,8 +666,17 @@ class SolanaClient:
             if tx_info.value.transaction.transaction.message.account_keys:
                 # В BUY транзакции mint находится в account_keys[11]
                 # Это можно увидеть из логов, где mint = "55YanwmkJQrk2SiZRKNKVbLVz7Ht33zg6RU7uYvipump"
-                token_address = str(tx_info.value.transaction.transaction.message.account_keys[11])
-                logger.info(f"[CLIENT] Extracted token address: {token_address}")
+                # token_address = str(tx_info.value.transaction.transaction.message.account_keys[11])
+                # logger.info(f"[CLIENT] Extracted token address: {token_address}")
+            
+                for account_key in tx_info.value.transaction.transaction.message.account_keys:
+                    logger.info(f"[CLIENT] Account key: {account_key}")
+                    if check_mint(account_key):
+                        token_address = account_key
+                        logger.info(f"[CLIENT] Found token address: {token_address}")
+                        break
+                    else:
+                        logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
             
             # Convert to dict before JSON serialization
             tx_info_dict = {
@@ -635,7 +690,7 @@ class SolanaClient:
                 }
             }
             
-            logger.debug(f"[CLIENT] Transaction info: {json.dumps(tx_info_dict, indent=2)}")
+            # logger.debug(f"[CLIENT] Transaction info: {json.dumps(tx_info_dict, indent=2)}")
             return tx_info_dict
             
         except Exception as e:
@@ -682,3 +737,49 @@ class SolanaClient:
             import traceback
             logger.error(f"[CLIENT] Traceback: {traceback.format_exc()}")
             return 0
+
+def check_mint(account: Pubkey) -> bool:
+    """
+    Check if the given account is a token mint.
+    This checks various conditions to identify token addresses in different transaction types.
+    
+    Args:
+        account: The account to check
+    
+    Returns:
+        bool: True if the account is likely a token mint, False otherwise
+    """
+    try:
+        # Known non-token program IDs to exclude
+        EXCLUDED_PROGRAMS = {
+            "11111111111111111111111111111111",  # System Program
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",  # Token Program
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",  # Associated Token Program
+            "So11111111111111111111111111111111111111112",  # Wrapped SOL
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",  # PUMP Program
+            "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",  # PUMP Global
+            "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",  # PUMP Event Authority
+            "CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM",  # PUMP Fee
+            "SysvarRent111111111111111111111111111111111",  # Rent Program
+        }
+        
+        # Convert account to string for comparison
+        account_str = str(account)
+        
+        # Skip known program IDs
+        if account_str in EXCLUDED_PROGRAMS:
+            return False
+            
+        # Check if account ends with 'pump' (common for pump tokens)
+        if account_str.lower().endswith('pump'):
+            logger.info(f"[CLIENT] Found pump token: {account_str}")
+            return True
+            
+        # Additional checks can be added here based on token patterns
+        # For example, checking account string length, specific prefixes, etc.
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"[CLIENT] Error in check_mint: {str(e)}")
+        return False

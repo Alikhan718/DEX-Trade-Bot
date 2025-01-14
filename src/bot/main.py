@@ -35,6 +35,7 @@ class SolanaDEXBot:
             self.smart_money_tracker = SmartMoneyTracker()
             self.rugcheck_service = RugCheckService()
             self.copy_trade_service = CopyTradeService()
+            self.copy_trade_service.set_bot(self.bot)  # Set bot instance for notifications
             
             # Setup database
             self.engine = create_async_engine(

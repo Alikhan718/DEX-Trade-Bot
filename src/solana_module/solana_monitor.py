@@ -68,7 +68,7 @@ class SolanaMonitor:
 
         try:
             logger.info(f"[MONITOR] Processing transaction for leader {leader}")
-            logger.info(f"[MONITOR] Raw transaction data: {json.dumps(transaction, indent=2)}")
+            # logger.info(f"[MONITOR] Raw transaction data: {json.dumps(transaction, indent=2)}")
             
             result = transaction.get("params", {}).get("result", {}).get("value", {})
             signature = result.get("signature", "Unknown")
@@ -116,6 +116,40 @@ class SolanaMonitor:
                 for follower in followers:
                     logger.info(f"[MONITOR] Notifying follower {follower} of transaction {signature} ({tx_type})")
 
+            if tx_type == "SELL":
+                logger.info(f"[MONITOR] SELL transaction detected: {signature}")
+                # Extract token address from transaction
+                token_address = None
+                try:
+                    tx_info = await self.client.get_transaction(signature)
+                    print("tx_infooooooo", tx_info)
+                    if tx_info:
+                        # Get mint address from accounts[2] (third account in instruction)
+                        token_address = tx_info["token_address"]
+                        logger.info(f"[MONITOR] Extracted token address: {token_address}")
+                except Exception as e:
+                    logger.error(f"[MONITOR] Error extracting token address: {str(e)}")
+                
+                # Call transaction callback with signature
+                if self.transaction_callback:
+                    logger.info(f"[MONITOR] Calling transaction callback for SELL transaction")
+                    try:
+                        await self.transaction_callback(leader, tx_type, signature, token_address)
+                        logger.info("[MONITOR] Transaction callback completed successfully")
+                    except Exception as e:
+                        logger.error(f"[MONITOR] Error in transaction callback: {str(e)}")
+                        logger.error(f"[MONITOR] Error details: {type(e).__name__}")
+                        import traceback
+                        logger.error(f"[MONITOR] Traceback: {traceback.format_exc()}")
+                else:
+                    logger.warning("[MONITOR] No transaction callback set")
+
+                # Notify followers
+                followers = self.leader_follower_map.get(leader, set())
+                logger.info(f"[MONITOR] Notifying {len(followers)} followers for leader {leader}")
+                for follower in followers:
+                    logger.info(f"[MONITOR] Notifying follower {follower} of transaction {signature} ({tx_type})")
+
         except Exception as e:
             logger.error(f"[MONITOR] Error processing transaction: {str(e)}")
             logger.error(f"[MONITOR] Error type: {type(e).__name__}")
@@ -129,15 +163,28 @@ class SolanaMonitor:
         Infer transaction type from logs.
         """
         if not logs:
+            logger.warning("[MONITOR] No logs found in transaction")
             return "UNKNOWN"
 
+        logger.info(f"[MONITOR] Analyzing {len(logs)} logs")
         for log in logs:
             if isinstance(log, str):
+                logger.info(f"[MONITOR] Analyzing log: {log}")
                 if "Instruction: Buy" in log:
+                    logger.info("[MONITOR] Found BUY instruction")
                     return "BUY"
                 if "Instruction: Sell" in log:
+                    logger.info("[MONITOR] Found SELL instruction")
                     return "SELL"
+                # Добавляем дополнительные проверки для определения типа транзакции
+                if "Program log: Executing sell" in log:
+                    logger.info("[MONITOR] Found SELL in program log")
+                    return "SELL"
+                if "Program log: Executing buy" in log:
+                    logger.info("[MONITOR] Found BUY in program log")
+                    return "BUY"
 
+        logger.warning("[MONITOR] Could not determine transaction type from logs")
         return "UNKNOWN"
 
     def add_leader(self, leader: str):

@@ -7,6 +7,8 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 import base64
+import logging
+from solders.keypair import Keypair
 
 load_dotenv()
 
@@ -36,6 +38,8 @@ def get_encryption_key():
 ENCRYPTION_KEY = get_encryption_key()
 cipher_suite = Fernet(ENCRYPTION_KEY)
 
+logger = logging.getLogger(__name__)
+
 class User(Base):
     __tablename__ = "users"
     
@@ -53,19 +57,86 @@ class User(Base):
     def private_key(self) -> str:
         """Decrypt and return private key"""
         if not self._private_key:
+            logger.error("[DB] No encrypted private key found")
             return None
         try:
-            return cipher_suite.decrypt(self._private_key.encode('ascii')).decode('ascii')
-        except Exception:
+            logger.info("[DB] Attempting to decrypt private key")
+            logger.debug(f"[DB] Encrypted key length: {len(self._private_key)}")
+            
+            # Decrypt the key
+            decrypted = cipher_suite.decrypt(self._private_key.encode('ascii')).decode('ascii')
+            logger.info("[DB] Successfully decrypted private key")
+            logger.debug(f"[DB] Decrypted key length: {len(decrypted)}")
+            
+            # Validate decrypted key format
+            try:
+                key_parts = decrypted.split(',')
+                logger.debug(f"[DB] Split decrypted key into {len(key_parts)} parts")
+                
+                if len(key_parts) != 64:
+                    logger.error(f"[DB] Invalid decrypted key length: {len(key_parts)} (expected 64)")
+                    return None
+                
+                # Verify each part is a valid integer
+                key_bytes = [int(i) for i in key_parts]
+                if not all(0 <= b <= 255 for b in key_bytes):
+                    logger.error("[DB] Invalid byte values in decrypted key")
+                    return None
+                    
+                # Try to create a keypair to verify the key is valid
+                keypair = Keypair.from_bytes(bytes(key_bytes))
+                logger.debug(f"[DB] Successfully verified key. Public key: {keypair.pubkey()}")
+                
+            except Exception as e:
+                logger.error(f"[DB] Invalid decrypted key format: {str(e)}")
+                logger.error(f"[DB] Error type: {type(e).__name__}")
+                return None
+            
+            return decrypted
+            
+        except Exception as e:
+            logger.error(f"[DB] Failed to decrypt private key: {str(e)}")
+            logger.error(f"[DB] Error type: {type(e).__name__}")
             return None
     
     @private_key.setter
     def private_key(self, value: str):
         """Encrypt and save private key"""
         if value is None:
+            logger.info("[DB] Setting private key to None")
             self._private_key = None
         else:
-            self._private_key = cipher_suite.encrypt(value.encode('ascii')).decode('ascii')
+            try:
+                logger.info("[DB] Validating private key before encryption")
+                
+                # Validate key format
+                key_parts = value.split(',')
+                if len(key_parts) != 64:
+                    logger.error(f"[DB] Invalid key length: {len(key_parts)} (expected 64)")
+                    raise ValueError(f"Invalid private key length: {len(key_parts)}")
+                
+                # Verify each part is a valid integer
+                key_bytes = [int(i) for i in key_parts]
+                if not all(0 <= b <= 255 for b in key_bytes):
+                    logger.error("[DB] Invalid byte values in key")
+                    raise ValueError("Invalid byte values in key")
+                
+                # Try to create a keypair to verify the key is valid
+                keypair = Keypair.from_bytes(bytes(key_bytes))
+                logger.debug(f"[DB] Successfully verified key. Public key: {keypair.pubkey()}")
+                
+                # Encrypt the key
+                logger.info("[DB] Encrypting private key")
+                encrypted = cipher_suite.encrypt(value.encode('ascii')).decode('ascii')
+                logger.debug(f"[DB] Encrypted key length: {len(encrypted)}")
+                
+                self._private_key = encrypted
+                logger.info("[DB] Private key successfully encrypted and stored")
+                
+            except Exception as e:
+                logger.error(f"[DB] Failed to encrypt private key: {str(e)}")
+                logger.error(f"[DB] Error type: {type(e).__name__}")
+                raise ValueError(f"Failed to encrypt private key: {str(e)}")
 
 class SmartMoneyTrader(Base):
     __tablename__ = "smart_money_traders"

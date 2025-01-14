@@ -174,16 +174,44 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
     """Handle private key input for wallet import"""
     try:
         private_key_str = message.text.strip()
+        logger.info("[WALLET] Starting private key validation")
+        logger.debug(f"[WALLET] Private key string length: {len(private_key_str)}")
         
         # Validate and convert private key
         try:
+            # Split and convert to integers
+            key_parts = private_key_str.split(',')
+            logger.debug(f"[WALLET] Split private key into {len(key_parts)} parts")
+            
+            # Validate key length
+            if len(key_parts) != 64:
+                logger.error(f"[WALLET] Invalid key length: {len(key_parts)} (expected 64)")
+                raise ValueError(f"Invalid private key length: {len(key_parts)}")
+            
             # Convert string back to bytes
-            private_key_bytes = bytes([int(i) for i in private_key_str.split(',')])
+            private_key_bytes = bytes([int(i) for i in key_parts])
+            logger.debug(f"[WALLET] Converted to bytes with length: {len(private_key_bytes)}")
+            
+            # Validate each byte is in valid range
+            if not all(0 <= b <= 255 for b in private_key_bytes):
+                logger.error("[WALLET] Invalid byte values in private key")
+                raise ValueError("Invalid byte values in private key")
+            
             keypair = Keypair.from_bytes(private_key_bytes)
             public_key = str(keypair.pubkey())
+            logger.info(f"[WALLET] Successfully validated keypair. Public key: {public_key}")
+            
+            # Verify we can recreate the keypair from the string we'll store
+            test_bytes = bytes([int(i) for i in private_key_str.split(',')])
+            test_keypair = Keypair.from_bytes(test_bytes)
+            if str(test_keypair.pubkey()) != public_key:
+                logger.error("[WALLET] Key verification failed")
+                raise ValueError("Key verification failed")
+            logger.info("[WALLET] Key verification successful")
             
         except Exception as e:
-            logger.error(f"Invalid private key format: {e}")
+            logger.error(f"[WALLET] Invalid private key format: {str(e)}")
+            logger.error(f"[WALLET] Error type: {type(e).__name__}")
             await message.reply(
                 "❌ Неверный формат приватного ключа.\n"
                 "Убедитесь, что вы скопировали его правильно.",
@@ -202,6 +230,7 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
         user = result.scalar_one_or_none()
         
         if not user:
+            logger.info(f"[WALLET] Creating new user with ID: {user_id}")
             # Create new user if doesn't exist
             user = User(
                 telegram_id=user_id,
@@ -213,10 +242,11 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
                 last_activity=datetime.now()
             )
             session.add(user)
+            logger.info(f"[WALLET] New user created with wallet: {public_key}")
         else:
             # Store old wallet info in log for recovery if needed
             logger.info(
-                f"User {user_id} replacing wallet "
+                f"[WALLET] User {user_id} replacing wallet "
                 f"from {user.solana_wallet[:8]}... to {public_key[:8]}..."
             )
             
@@ -224,8 +254,10 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
             user.solana_wallet = public_key
             user.private_key = private_key_str
             user.last_activity = datetime.now()
+            logger.info(f"[WALLET] User wallet updated to: {public_key}")
         
         await session.commit()
+        logger.info("[WALLET] Database changes committed successfully")
         
         # Delete the message containing the private key for security
         await message.delete()

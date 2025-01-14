@@ -1,16 +1,17 @@
 import logging
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy import select
+from aiogram import Bot
 
-from ...database.models import User, CopyTrade, CopyTradeTransaction
-from ...solana_module.copy_trade_manager import CopyTradeManager
 from ...solana_module.solana_client import SolanaClient
+from ...solana_module.copy_trade_manager import CopyTradeManager
+from ...database.models import CopyTrade
 
 logger = logging.getLogger(__name__)
 
 class CopyTradeService:
     _instance: Optional['CopyTradeService'] = None
+    _bot: Optional[Bot] = None
     
     def __new__(cls):
         if cls._instance is None:
@@ -20,13 +21,25 @@ class CopyTradeService:
     def __init__(self):
         if not hasattr(self, 'initialized'):
             self.solana_client = SolanaClient(100000)  # Default compute unit price
-            self.manager = CopyTradeManager(self.solana_client)
+            self.manager = None  # Will be initialized in start()
             self.Session = None
             self.initialized = True
+
+    @classmethod
+    def set_bot(cls, bot: Bot):
+        """Set the bot instance to be used by the service"""
+        cls._bot = bot
+        logger.info("Bot instance set in CopyTradeService")
 
     async def start(self, session: AsyncSession):
         """Start the copy trade service"""
         try:
+            if not self._bot:
+                raise ValueError("Bot instance not set. Call set_bot() first.")
+
+            # Initialize manager with bot instance
+            self.manager = CopyTradeManager(self.solana_client, self._bot)
+            
             # Store session factory
             self.Session = async_sessionmaker(
                 session.bind,

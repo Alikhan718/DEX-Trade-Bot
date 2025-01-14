@@ -20,11 +20,22 @@ class UserTransactionHandler:
             compute_unit_price: Price per compute unit in lamports
         """
         try:
+            logger.info("[HANDLER] Initializing transaction handler")
+            logger.debug(f"[HANDLER] Private key string starts with: {private_key_str[:20] if private_key_str else 'None'}...")
             
             # Initialize SolanaClient with user's keypair
-            self.client = SolanaClient(compute_unit_price)
+            self.client = SolanaClient(compute_unit_price=compute_unit_price, private_key=private_key_str)
+            
+            # Try to load keypair immediately to verify it works
+            try:
+                payer = self.client.load_keypair()
+                logger.info(f"[HANDLER] Successfully loaded keypair. Public key: {payer.pubkey()}")
+            except Exception as e:
+                logger.error(f"[HANDLER] Failed to load keypair: {str(e)}")
+                raise
+                
         except Exception as e:
-            logger.error(f"Error initializing transaction handler: {e}")
+            logger.error(f"[HANDLER] Error initializing transaction handler: {e}")
             raise ValueError("Invalid private key format")
     
     async def buy_token(
