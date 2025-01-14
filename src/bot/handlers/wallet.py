@@ -10,20 +10,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from aiogram import F
 
 from ...database.models import User
 from ...services.solana import SolanaService
 from solders.keypair import Keypair
 from .start import get_real_user_id
+from ..states import WalletStates
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 
-class WalletStates(StatesGroup):
-    waiting_for_private_key = State()
-
-@router.callback_query(lambda c: c.data == "wallet_menu")
+@router.callback_query(F.data == "wallet_menu", flags={"priority": 2})
 async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: AsyncSession, solana_service: SolanaService):
     """Handle wallet menu button press"""
     try:
@@ -94,7 +93,7 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: As
             ])
         )
 
-@router.callback_query(lambda c: c.data == "show_private_key")
+@router.callback_query(F.data == "show_private_key", flags={"priority": 2})
 async def on_show_private_key_button(callback_query: types.CallbackQuery, session: AsyncSession):
     """Handle show private key button press"""
     try:
@@ -149,7 +148,7 @@ async def delete_message_after_delay(message: types.Message, delay: int):
     except Exception as e:
         logger.error(f"Error auto-deleting key message: {e}")
 
-@router.callback_query(lambda c: c.data == "import_wallet")
+@router.callback_query(F.data == "import_wallet", flags={"priority": 2})
 async def on_import_wallet_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle import wallet button press"""
     try:

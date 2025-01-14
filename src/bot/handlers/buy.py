@@ -1,35 +1,32 @@
 import logging
-from aiogram import Router, types
+from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import re
+from typing import Union
 
 from ...services.solana import SolanaService
 from ...services.token_info import TokenInfoService
-from ...database.models import User
+from ...database.models import User, AutoBuySettings
 from .start import get_real_user_id
 from ...solana_module.transaction_handler import UserTransactionHandler
+from ..states import BuyStates, AutoBuySettingsStates
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 token_info_service = TokenInfoService()
 
-class BuyStates(StatesGroup):
-    waiting_for_token = State()
-    waiting_for_amount = State()
-    waiting_for_slippage = State()
+# Регулярное выражение для определения mint адреса
+MINT_ADDRESS_PATTERN = r'^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{44}$'
 
 def _is_valid_token_address(address: str) -> bool:
     """Проверяет валидность адреса токена"""
     try:
-        if len(address) != 44:
-            return False
-        valid_chars = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
-        return all(c in valid_chars for c in address)
+        return bool(re.match(MINT_ADDRESS_PATTERN, address))
     except Exception:
         return False
 
@@ -42,7 +39,7 @@ def _format_price(amount: float) -> str:
     else:
         return f"{amount:.2f}"
 
-@router.callback_query(lambda c: c.data == "buy")
+@router.callback_query(F.data == "buy", flags={"priority": 3})
 async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Обработчик нажатия кнопки Купить в главном меню"""
     try:
@@ -59,7 +56,7 @@ async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
         logger.error(f"Error in buy button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
-@router.message(BuyStates.waiting_for_token)
+@router.message(BuyStates.waiting_for_token, flags={"priority": 3})
 async def handle_token_input(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
     """Handle token address input"""
     try:
@@ -152,7 +149,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             "Пожалуйста, попробуйте позже или обратитесь в поддержку"
         ) 
 
-@router.callback_query(lambda c: c.data == "confirm_buy")
+@router.callback_query(lambda c: c.data == "confirm_buy", flags={"priority": 3})
 async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle buy confirmation"""
     try:
@@ -237,7 +234,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         await callback_query.answer("❌ Произошла ошибка")
         await state.clear()
 
-@router.callback_query(lambda c: c.data == "set_slippage")
+@router.callback_query(lambda c: c.data == "set_slippage", flags={"priority": 3})
 async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle slippage setting button"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -263,7 +260,7 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
         reply_markup=keyboard
     )
 
-@router.callback_query(lambda c: c.data.startswith("slippage_"))
+@router.callback_query(lambda c: c.data.startswith("slippage_"), flags={"priority": 3})
 async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle slippage choice"""
     choice = callback_query.data.split("_")[1]
@@ -446,3 +443,380 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
     except Exception as e:
         logger.error(f"Error handling preset amount: {e}")
         await callback_query.answer("❌ Произошла ошибка") 
+
+
+@router.callback_query(F.data == "auto_buy_settings", flags={"priority": 3})
+async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuery], session: AsyncSession):
+    """Показать настройки автобая"""
+    try:
+        # Определяем тип объекта и получаем нужные атрибуты
+        if isinstance(update, types.Message):
+            user_id = update.from_user.id
+            message = update
+        else:  # CallbackQuery
+            user_id = update.from_user.id
+            message = update.message
+
+        # Получаем пользователя и его настройки
+        user = await session.scalar(
+            select(User).where(User.telegram_id == user_id)
+        )
+        
+        if not user:
+            if isinstance(update, types.CallbackQuery):
+                await update.answer("❌ Пользователь не найден")
+            else:
+                await update.reply("❌ Пользователь не найден")
+            return
+            
+        settings = await session.scalar(
+            select(AutoBuySettings).where(AutoBuySettings.user_id == user.id)
+        )
+        
+        if not settings:
+            # Создаем настройки по умолчанию
+            settings = AutoBuySettings(user_id=user.id)
+            session.add(settings)
+            await session.commit()
+        
+        # Формируем клавиатуру
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"{'🟢' if settings.enabled else '🔴'} Автобай",
+                callback_data="toggle_auto_buy"
+            )],
+            [InlineKeyboardButton(
+                text=f"💰 Сумма: {settings.amount_sol} SOL",
+                callback_data="set_auto_buy_amount"
+            )],
+            [InlineKeyboardButton(
+                text=f"⚙️ Slippage: {settings.slippage}%",
+                callback_data="set_auto_buy_slippage"
+            )],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+        ])
+        
+        text = (
+            "⚡️ Настройки Автобая\n\n"
+            f"Статус: {'Включен' if settings.enabled else 'Выключен'}\n"
+            f"Сумма покупки: {settings.amount_sol} SOL\n"
+            f"Slippage: {settings.slippage}%\n"
+        )
+
+        # Отправляем или редактируем сообщение в зависимости от типа объекта
+        if isinstance(update, types.Message):
+            await message.answer(text, reply_markup=keyboard)
+        else:  # CallbackQuery
+            await message.edit_text(text, reply_markup=keyboard)
+        
+    except Exception as e:
+        logger.error(f"Error showing auto-buy settings: {e}")
+        if isinstance(update, types.CallbackQuery):
+            await update.answer("❌ Произошла ошибка")
+        else:
+            await update.reply("❌ Произошла ошибка")
+
+@router.callback_query(F.data == "toggle_auto_buy", flags={"priority": 3})
+async def toggle_auto_buy(callback: types.CallbackQuery, session: AsyncSession):
+    """Включить/выключить автобай"""
+    try:
+        settings = await session.scalar(
+            select(AutoBuySettings)
+            .join(User)
+            .where(User.telegram_id == callback.from_user.id)
+        )
+        
+        if settings:
+            settings.enabled = not settings.enabled
+            await session.commit()
+            
+        await show_auto_buy_settings(callback, session)
+        
+    except Exception as e:
+        logger.error(f"Error toggling auto-buy: {e}")
+        await callback.answer("❌ Произошла ошибка") 
+
+@router.callback_query(F.data == "set_auto_buy_amount", flags={"priority": 3})
+async def handle_set_auto_buy_amount(callback: types.CallbackQuery, state: FSMContext):
+    """Установка суммы для автобая"""
+    try:
+        await callback.message.edit_text(
+            "💰 Введите сумму для автопокупки в SOL\n"
+            "Например: 0.1",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="auto_buy_settings")]
+            ])
+        )
+        await state.set_state(AutoBuySettingsStates.ENTER_AMOUNT)
+    except Exception as e:
+        logger.error(f"Error in set auto-buy amount handler: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+@router.message(AutoBuySettingsStates.ENTER_AMOUNT, flags={"priority": 3})
+async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработка ввода суммы для автобая"""
+    try:
+        # Проверяем введенное значение
+        try:
+            amount = float(message.text.strip())
+            if amount <= 0:
+                raise ValueError("Amount must be positive")
+        except ValueError:
+            await message.reply(
+                "❌ Неверный формат суммы\n"
+                "Пожалуйста, введите положительное число",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="auto_buy_settings")]
+                ])
+            )
+            return
+
+        # Обновляем настройки в БД
+        settings = await session.scalar(
+            select(AutoBuySettings)
+            .join(User)
+            .where(User.telegram_id == message.from_user.id)
+        )
+        
+        if settings:
+            settings.amount_sol = amount
+            await session.commit()
+            
+        # Очищаем состояние и показываем обновленные настройки
+        await state.clear()
+        await message.answer(
+            f"✅ Сумма автопокупки установлена: {amount} SOL"
+        )
+        # Используем существующую функцию для показа настроек
+        await show_auto_buy_settings(message, session)
+        
+    except Exception as e:
+        logger.error(f"Error processing auto-buy amount input: {e}")
+        await message.reply("❌ Произошла ошибка")
+        await state.clear()
+
+@router.callback_query(F.data == "set_auto_buy_slippage", flags={"priority": 3})
+async def handle_set_auto_buy_slippage(callback: types.CallbackQuery, state: FSMContext):
+    """Установка slippage для автобая"""
+    try:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="0.5%", callback_data="auto_buy_slippage_0.5"),
+                InlineKeyboardButton(text="1%", callback_data="auto_buy_slippage_1"),
+                InlineKeyboardButton(text="2%", callback_data="auto_buy_slippage_2")
+            ],
+            [InlineKeyboardButton(text="Ввести вручную", callback_data="auto_buy_slippage_custom")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="auto_buy_settings")]
+        ])
+        
+        await callback.message.edit_text(
+            "⚙️ Выберите slippage для автопокупки:",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error in set auto-buy slippage handler: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+@router.callback_query(lambda c: c.data.startswith("auto_buy_slippage_"), flags={"priority": 3})
+async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Обработка выбора slippage для автобая"""
+    try:
+        choice = callback.data.replace("auto_buy_slippage_", "")
+        
+        if choice == "custom":
+            await callback.message.edit_text(
+                "⚙️ Введите значение slippage (в процентах)\n"
+                "Например: 1.5",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_auto_buy_slippage")]
+                ])
+            )
+            await state.set_state(AutoBuySettingsStates.ENTER_SLIPPAGE)
+            return
+            
+        # Если выбрано предустановленное значение
+        slippage = float(choice)
+        
+        # Обновляем настройки в БД
+        settings = await session.scalar(
+            select(AutoBuySettings)
+            .join(User)
+            .where(User.telegram_id == callback.from_user.id)
+        )
+        
+        if settings:
+            settings.slippage = slippage
+            await session.commit()
+            
+        await show_auto_buy_settings(callback, session)
+        
+    except Exception as e:
+        logger.error(f"Error processing auto-buy slippage choice: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+@router.message(AutoBuySettingsStates.ENTER_SLIPPAGE, flags={"priority": 3})
+async def handle_auto_buy_slippage_input(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработка ввода slippage для автобая"""
+    try:
+        # Проверяем введенное значение
+        try:
+            slippage = float(message.text.strip())
+            if slippage <= 0 or slippage > 100:
+                raise ValueError("Slippage must be between 0 and 100")
+        except ValueError:
+            await message.reply(
+                "❌ Неверный формат slippage\n"
+                "Пожалуйста, введите число от 0 до 100",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_auto_buy_slippage")]
+                ])
+            )
+            return
+
+        # Обновляем настройки в БД
+        settings = await session.scalar(
+            select(AutoBuySettings)
+            .join(User)
+            .where(User.telegram_id == message.from_user.id)
+        )
+        
+        if settings:
+            settings.slippage = slippage
+            await session.commit()
+            
+        # Очищаем состояние и показываем обновленные настройки
+        await state.clear()
+        await message.answer(
+            f"✅ Slippage установлен: {slippage}%"
+        )
+        # Используем существующую функцию для показа настроек
+        await show_auto_buy_settings(message, session)
+        
+    except Exception as e:
+        logger.error(f"Error processing auto-buy slippage input: {e}")
+        await message.reply("❌ Произошла ошибка")
+        await state.clear()
+
+
+@router.message(flags={"allow_next": True})
+async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
+    """Автоматическая покупка при получении mint адреса"""
+    try:
+        # Получаем настройки автобая
+        settings = await session.scalar(
+            select(AutoBuySettings)
+            .join(User)
+            .where(User.telegram_id == message.from_user.id)
+        )
+        
+        # Если автобай выключен или настройки не найдены, пропускаем
+        if not settings or not settings.enabled:
+            return
+
+        # Проверяем текущее состояние пользователя
+        current_state = await state.get_state()
+        if current_state is not None:
+            return
+
+        # Проверяем, является ли сообщение mint адресом
+        token_address = message.text.strip()
+        if not _is_valid_token_address(token_address):
+            return
+        
+        logger.info(f"Detected mint address: {token_address}")
+        
+        # Получаем информацию о пользователе
+        user_id = get_real_user_id(message)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            logger.warning(f"User not found for auto-buy: {user_id}")
+            return
+            
+        # Получаем баланс кошелька для проверки
+        balance = await solana_service.get_wallet_balance(user.solana_wallet)
+        
+        # Проверяем достаточно ли средств
+        if balance < settings.amount_sol:
+            await message.reply(
+                f"❌ Недостаточно средств для автопокупки\n"
+                f"Необходимо: {settings.amount_sol} SOL\n"
+                f"Доступно: {balance:.4f} SOL",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            return
+            
+        # Отправляем сообщение о начале покупки
+        status_message = await message.reply(
+            "🔄 Выполняется автоматическая покупка токена...\n"
+            "Пожалуйста, подождите",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отменить", callback_data="main_menu")]
+            ])
+        )
+        
+        # Инициализируем обработчик транзакций
+        try:
+            tx_handler = UserTransactionHandler(user.private_key)
+        except ValueError as e:
+            logger.error(f"Failed to initialize transaction handler: {e}")
+            await status_message.edit_text(
+                "❌ Ошибка инициализации кошелька",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            return
+        
+        # Выполняем покупку с предустановленными параметрами
+        amount_sol = settings.amount_sol
+        slippage = settings.slippage
+        
+        # Получаем информацию о токене перед покупкой
+        token_info = await token_info_service.get_token_info(token_address)
+
+        tx_signature = await tx_handler.buy_token(
+            token_address=token_address,
+            amount_sol=amount_sol,
+            slippage=slippage
+        )
+        
+        if tx_signature:
+            logger.info(f"Auto-buy successful: {tx_signature}")
+            # Обновляем сообщение об успехе
+            await status_message.edit_text(
+                "✅ Токен успешно куплен!\n\n"
+                f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'}\n"
+                f"💰 Потрачено: {amount_sol} SOL\n"
+                f"⚙️ Slippage: {slippage}%\n"
+                f"💳 Баланс: {(balance - amount_sol):.4f} SOL\n"
+                f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
+                parse_mode="MARKDOWN",
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+        else:
+            logger.error("Auto-buy transaction failed")
+            await status_message.edit_text(
+                "❌ Ошибка при покупке токена\n"
+                "Пожалуйста, попробуйте позже или используйте стандартный процесс покупки",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in auto-buy handler: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при автопокупке\n"
+            "Пожалуйста, используйте стандартный процесс покупки через меню",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+            ])
+        ) 

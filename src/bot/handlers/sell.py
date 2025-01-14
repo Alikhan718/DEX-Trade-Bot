@@ -1,5 +1,5 @@
 import logging
-from aiogram import Router, types
+from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -14,16 +14,12 @@ from ...database.models import User
 from .start import get_real_user_id
 from ...solana_module.transaction_handler import UserTransactionHandler
 from ...solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
+from ..states import SellStates
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 token_info_service = TokenInfoService()
-
-class SellStates(StatesGroup):
-    waiting_for_token = State()
-    waiting_for_amount = State()
-    waiting_for_slippage = State()
 
 def _is_valid_token_address(address: str) -> bool:
     """Проверяет валидность адреса токена"""
@@ -44,10 +40,11 @@ def _format_price(amount: float) -> str:
     else:
         return f"{amount:.2f}"
 
-@router.callback_query(lambda c: c.data == "sell")
+@router.callback_query(F.data == "sell", flags={"priority": 3})
 async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Обработчик нажатия кнопки Продать в главном меню"""
     try:
+        await state.set_state(SellStates.waiting_for_token)
         await callback_query.message.edit_text(
             "🔍 Введите адрес токена, который хотите продать:\n"
             "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
@@ -55,13 +52,12 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext)
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
-        )
-        await state.set_state(SellStates.waiting_for_token)
+        )   
     except Exception as e:
         logger.error(f"Error in sell button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
-@router.message(SellStates.waiting_for_token)
+@router.message(SellStates.waiting_for_token, flags={"priority": 2})
 async def handle_token_input(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
     """Handle token address input"""
     try:

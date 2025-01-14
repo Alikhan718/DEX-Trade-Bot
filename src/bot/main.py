@@ -86,11 +86,12 @@ class SolanaDEXBot:
         self.dp.include_router(wallet.router)
         self.dp.include_router(smart_money.router)
         self.dp.include_router(help.router)
-        self.dp.include_router(buy.router)
+        self.dp.include_router(sell.router)
         self.dp.include_router(rugcheck.router)
         self.dp.include_router(copy_trade.router)
-        self.dp.include_router(sell.router)
+        self.dp.include_router(buy.router)
         
+ 
         logger.info("Handlers registered successfully")
         
     async def init_db(self):

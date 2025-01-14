@@ -223,3 +223,22 @@ class CopyTradeTransaction(Base):
     error_message = Column(String)
     amount_sol = Column(Float)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow) 
+
+class AutoBuySettings(Base):
+    __tablename__ = 'auto_buy_settings'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'))
+    enabled = Column(Boolean, default=True)
+    amount_sol = Column(Float, default=0.1)
+    slippage = Column(Float, default=1.0)
+    max_mc = Column(Float, nullable=True)  # Максимальная market cap
+    min_liquidity = Column(Float, nullable=True)  # Минимальная ликвидность
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Отношение к пользователю
+    user = relationship("User", back_populates="auto_buy_settings")
+
+# Добавляем обратное отношение в модель User
+User.auto_buy_settings = relationship("AutoBuySettings", back_populates="user", uselist=False) 

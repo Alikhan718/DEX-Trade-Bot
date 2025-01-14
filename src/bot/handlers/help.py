@@ -2,14 +2,15 @@ import logging
 from aiogram import Router
 from aiogram.types import CallbackQuery
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import F
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 
-@router.callback_query(lambda c: c.data == "help")
+@router.callback_query(F.data == "help", flags={"priority": 6})
 async def on_help_button(callback_query: CallbackQuery):
-    """Handle help button press"""
+    """Помощь"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
     ])
