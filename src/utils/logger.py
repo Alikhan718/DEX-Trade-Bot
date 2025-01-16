@@ -3,6 +3,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 import os
 
+
 def setup_logging():
     """Настраивает логгирование для бота"""
     # Создаем директорию для логов если её нет
@@ -22,7 +23,7 @@ def setup_logging():
     # Хендлер для файла
     file_handler = RotatingFileHandler(
         os.path.join(log_dir, 'bot.log'),
-        maxBytes=10*1024*1024,  # 10MB
+        maxBytes=10 * 1024 * 1024,  # 10MB
         backupCount=5
     )
     file_handler.setFormatter(formatter)
@@ -38,4 +39,4 @@ def setup_logging():
     logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
     logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-    return logger 
+    return logger

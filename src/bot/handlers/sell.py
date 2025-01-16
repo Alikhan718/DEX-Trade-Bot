@@ -10,7 +10,7 @@ from solders.pubkey import Pubkey
 
 from ...services.solana import SolanaService
 from ...services.token_info import TokenInfoService
-from ...database.models import User, Trade
+from ...database.models import User
 from .start import get_real_user_id
 from ...solana_module.transaction_handler import UserTransactionHandler
 from ...solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
@@ -240,18 +240,8 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         # Calculate amount of tokens to sell based on percentage or initial amount
         if sell_percentage == "initial":
             # Find the most recent buy transaction for this token
-            buy_tx = await session.scalar(
-                select(Trade)
-                .where(
-                    Trade.user_id == user.id,
-                    Trade.token_address == token_address,
-                    Trade.is_buy == True,
-                    Trade.status == 'completed'
-                )
-                .order_by(Trade.timestamp.desc())
-            )
-            
-            if not buy_tx:
+
+            if True:
                 logger.warning("No previous buy transaction found for Initial sell")
                 await status_message.edit_text(
                     "❌ Не найдена предыдущая транзакция покупки\n"
@@ -263,11 +253,11 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                 return
                 
             # Calculate how many tokens we need to sell to get the same amount of SOL
-            amount_tokens = (buy_tx.amount_sol / current_price_sol)
-            
-            # Check if we have enough tokens
-            if amount_tokens > token_balance:
-                amount_tokens = token_balance  # Sell all available tokens if not enough
+            # amount_tokens = (buy_tx.amount_sol / current_price_sol)
+            #
+            # # Check if we have enough tokens
+            # if amount_tokens > token_balance:
+            #     amount_tokens = token_balance  # Sell all available tokens if not enough
                 
             logger.info(f"Initial sell: Selling {amount_tokens} tokens to get {buy_tx.amount_sol} SOL")
         else:
@@ -283,20 +273,6 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         
         if tx_signature:
             logger.info(f"Sell transaction successful: {tx_signature}")
-            
-            # Save transaction to database
-            new_trade = Trade(
-                user_id=user.id,
-                token_address=token_address,
-                amount=amount_tokens,
-                price=current_price_sol,
-                amount_sol=amount_tokens * current_price_sol,
-                is_buy=False,
-                status='completed',
-                transaction_hash=tx_signature
-            )
-            session.add(new_trade)
-            await session.commit()
             
             # Update success message
             sell_type = "Initial" if sell_percentage == "initial" else f"{sell_percentage}%"
