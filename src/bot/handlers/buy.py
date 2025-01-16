@@ -10,10 +10,12 @@ from typing import Union
 
 from ...services.solana import SolanaService
 from ...services.token_info import TokenInfoService
-from ...database.models import User, AutoBuySettings
+from ...database.models import User, AutoBuySettings, Trade
 from .start import get_real_user_id
 from ...solana_module.transaction_handler import UserTransactionHandler
 from ..states import BuyStates, AutoBuySettingsStates
+from solders.pubkey import Pubkey
+from ...solana_module.utils import get_bonding_curve_address
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +95,15 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
         
-        # Save token address to state
-        await state.update_data(token_address=token_address)
+        # Save token address and initial slippage to state
+        await state.update_data({
+            'token_address': token_address,
+            'slippage': 1.0  # Default slippage
+        })
+        
+        # Get current slippage from state
+        data = await state.get_data()
+        slippage = data.get('slippage', 1.0)  # Default to 1% if not set
         
         # Формируем клавиатуру
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -115,7 +124,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
                 InlineKeyboardButton(text="Custom", callback_data="custom_amount")
             ],
             # Slippage
-            [InlineKeyboardButton(text="⚙️ Slippage: 1%", callback_data="set_slippage")],
+            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")],
             # Действия
             [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
@@ -194,6 +203,12 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             "Пожалуйста, подождите"
         )
         
+        # Get token price before transaction
+        mint = Pubkey.from_string(token_address)
+        bonding_curve, _ = get_bonding_curve_address(mint, tx_handler.client.PUMP_PROGRAM)
+        curve_state = await tx_handler.client.get_pump_curve_state(bonding_curve)
+        token_price_sol = tx_handler.client.calculate_pump_curve_price(curve_state)
+        
         # Execute buy transaction
         logger.info("Executing buy transaction")
         tx_signature = await tx_handler.buy_token(
@@ -204,10 +219,30 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         
         if tx_signature:
             logger.info(f"Buy transaction successful: {tx_signature}")
+            
+            # Calculate token amount from SOL amount and price
+            token_amount = amount_sol / token_price_sol
+            
+            # Save transaction to database
+            new_trade = Trade(
+                user_id=user.id,
+                token_address=token_address,
+                amount=token_amount,
+                price=token_price_sol,
+                amount_sol=amount_sol,
+                is_buy=True,
+                status='completed',
+                transaction_hash=tx_signature
+            )
+            session.add(new_trade)
+            await session.commit()
+            
             # Update success message
             await status_message.edit_text(
                 "✅ Токен успешно куплен!\n\n"
                 f"💰 Потрачено: {amount_sol} SOL\n"
+                f"📈 Получено: {token_amount:.6f} токенов\n"
+                f"💵 Цена: {token_price_sol:.6f} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
                 disable_web_page_preview=True,
@@ -234,54 +269,77 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         await callback_query.answer("❌ Произошла ошибка")
         await state.clear()
 
-@router.callback_query(lambda c: c.data == "set_slippage", flags={"priority": 3})
+@router.callback_query(lambda c: c.data == "buy_set_slippage", flags={"priority": 10})
 async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle slippage setting button"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="0.5%", callback_data="slippage_0.5"),
-            InlineKeyboardButton(text="1%", callback_data="slippage_1"),
-            InlineKeyboardButton(text="2%", callback_data="slippage_2")
-        ],
-        [
-            InlineKeyboardButton(text="3%", callback_data="slippage_3"),
-            InlineKeyboardButton(text="5%", callback_data="slippage_5"),
-            InlineKeyboardButton(text="Custom", callback_data="slippage_custom")
-        ],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
-    ])
-    
-    await callback_query.message.edit_text(
-        "⚙️ Настройка Slippage\n\n"
-        "Выберите максимальное проскальзывание цены:\n"
-        "• Чем выше slippage, тем больше вероятность успешной транзакции\n"
-        "• Чем ниже slippage, тем лучше цена исполнения\n"
-        "• Рекомендуемое значение: 1-2%",
-        reply_markup=keyboard
-    )
+    try:
+        # Get current data to verify we're in buy context
+        data = await state.get_data()
+        
+        if not data.get("token_address"):
+            await callback_query.answer("❌ Ошибка: не выбран токен")
+            return
+            
+        # Save buy context
+        await state.update_data(menu_type="buy")
+            
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="0.5%", callback_data="buy_slippage_0.5"),
+                InlineKeyboardButton(text="1%", callback_data="buy_slippage_1"),
+                InlineKeyboardButton(text="2%", callback_data="buy_slippage_2")
+            ],
+            [
+                InlineKeyboardButton(text="3%", callback_data="buy_slippage_3"),
+                InlineKeyboardButton(text="5%", callback_data="buy_slippage_5"),
+                InlineKeyboardButton(text="Custom", callback_data="buy_slippage_custom")
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
+        ])
+        
+        await callback_query.message.edit_text(
+            "⚙️ Настройка Slippage для покупки\n\n"
+            "Выберите максимальное проскальзывание цены:\n"
+            "• Чем выше slippage, тем больше вероятность успешной транзакции\n"
+            "• Чем ниже slippage, тем лучше цена исполнения\n"
+            "• Рекомендуемое значение: 1-2%",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error in set_slippage handler: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
 
-@router.callback_query(lambda c: c.data.startswith("slippage_"), flags={"priority": 3})
+@router.callback_query(lambda c: c.data.startswith("buy_slippage_"), flags={"priority": 10})
 async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle slippage choice"""
-    choice = callback_query.data.split("_")[1]
-    
-    if choice == "custom":
-        await callback_query.message.edit_text(
-            "⚙️ Пользовательский Slippage\n\n"
-            "Введите значение в процентах (например, 1.5):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage")]
-            ])
-        )
-        await state.set_state(BuyStates.waiting_for_slippage)
-        return
+    try:
+        # Verify we're in buy context
+        data = await state.get_data()
         
-    # Convert choice to float and save to state
-    slippage = float(choice)
-    await state.update_data(slippage=slippage)
-    
-    # Return to buy menu
-    await show_buy_menu(callback_query.message, state)
+        if data.get("menu_type") != "buy":
+            return
+            
+        choice = callback_query.data.split("_")[2]  # buy_slippage_X -> X
+        
+        if choice == "custom":
+            await callback_query.message.edit_text(
+                "⚙️ Пользовательский Slippage для покупки\n\n"
+                "Введите значение в процентах (например, 1.5):",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage_buy")]
+                ])
+            )
+            await state.set_state(BuyStates.waiting_for_slippage)
+            return
+            
+        # Convert choice to float and save to state
+        slippage = float(choice)
+        await state.update_data(slippage=slippage)
+        await show_buy_menu(callback_query.message, state)
+            
+    except Exception as e:
+        logger.error(f"Error handling slippage choice: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
 
 @router.message(BuyStates.waiting_for_slippage)
 async def handle_custom_slippage(message: types.Message, state: FSMContext):
@@ -292,73 +350,105 @@ async def handle_custom_slippage(message: types.Message, state: FSMContext):
             raise ValueError("Invalid slippage value")
             
         await state.update_data(slippage=slippage)
-        await show_buy_menu(message, state)
         
+        # Отправляем новое сообщение об успешном изменении
+        status_message = await message.answer(f"✅ Slippage установлен: {slippage}%")
+        
+        # Показываем обновленное меню покупки
+        await show_buy_menu(status_message, state)
+            
     except ValueError:
         await message.reply(
             "❌ Неверное значение. Введите число от 0.1 до 100:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage")]
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage_buy")]
             ])
         )
 
-@router.callback_query(lambda c: c.data == "back_to_buy")
+@router.callback_query(lambda c: c.data == "back_to_buy", flags={"priority": 10})
 async def handle_back_to_buy(callback_query: types.CallbackQuery, state: FSMContext):
     """Return to buy menu"""
+    logger.info("[BUY] Handling back_to_buy")
+    data = await state.get_data()
+    logger.info(f"[BUY] Current state data: {data}")
+    if data.get("menu_type") != "buy":
+        logger.warning(f"[BUY] Wrong menu type: {data.get('menu_type')}")
+        return
     await show_buy_menu(callback_query.message, state)
+    logger.info("[BUY] Showed buy menu")
 
 async def show_buy_menu(message: types.Message, state: FSMContext):
-    """Show buy menu with current settings"""
-    data = await state.get_data()
-    token_address = data.get("token_address")
-    slippage = data.get("slippage", 1.0)
-    
-    # Get token info again
-    token_info = await token_info_service.get_token_info(token_address)
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        # Тип ордера
-        [
-            InlineKeyboardButton(text="🟢 Купить", callback_data="market_buy"),
-            InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_buy")
-        ],
-        # Предустановленные суммы
-        [
-            InlineKeyboardButton(text="0.002 SOL", callback_data="buy_0.002"),
-            InlineKeyboardButton(text="0.005 SOL", callback_data="buy_0.005"),
-            InlineKeyboardButton(text="0.01 SOL", callback_data="buy_0.01")
-        ],
-        [
-            InlineKeyboardButton(text="0.02 SOL", callback_data="buy_0.02"),
-            InlineKeyboardButton(text="0.1 SOL", callback_data="buy_0.1"),
-            InlineKeyboardButton(text="Custom", callback_data="custom_amount")
-        ],
-        # Slippage
-        [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="set_slippage")],
-        # Действия
-        [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-    ])
-    
-    message_text = (
-        f"${token_info.symbol} 📈 - {token_info.name}\n\n"
-        f"📍 Адрес токена:\n`{token_address}`\n\n"
-        f"⚙️ Настройки:\n"
-        f"• Slippage: {slippage}%\n\n"
-        f"📊 Информация о токене:\n"
-        f"• Price: ${_format_price(token_info.price_usd)}\n"
-        f"• MC: ${_format_price(token_info.market_cap)}\n"
-        f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
-        f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
-        f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
-    )
-    
-    await message.edit_text(
-        message_text,
-        reply_markup=keyboard,
-        parse_mode="MARKDOWN",
-        disable_web_page_preview=True
-    ) 
+    """Show buy menu with current token info and settings"""
+    try:
+        # Get current data
+        data = await state.get_data()
+        token_address = data.get("token_address")
+        amount_sol = data.get("amount_sol", 0.0)
+        slippage = data.get("slippage", 1.0)
+        
+        # Get token info
+        token_info = await token_info_service.get_token_info(token_address)
+        if not token_info:
+            await message.edit_text(
+                "❌ Не удалось получить информацию о токене",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            return
+            
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            # Тип ордера
+            [
+                InlineKeyboardButton(text="🟢 Купить", callback_data="market_buy"),
+                InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_buy")
+            ],
+            # Предустановленные суммы
+            [
+                InlineKeyboardButton(text="0.002 SOL", callback_data="buy_0.002"),
+                InlineKeyboardButton(text="0.005 SOL", callback_data="buy_0.005"),
+                InlineKeyboardButton(text="0.01 SOL", callback_data="buy_0.01")
+            ],
+            [
+                InlineKeyboardButton(text="0.02 SOL", callback_data="buy_0.02"),
+                InlineKeyboardButton(text="0.1 SOL", callback_data="buy_0.1"),
+                InlineKeyboardButton(text="Custom", callback_data="custom_amount")
+            ],
+            # Slippage
+            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")],
+            # Действия
+            [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+        ])
+        
+        message_text = (
+            f"${token_info.symbol} 📈 - {token_info.name}\n\n"
+            f"📍 Адрес токена:\n`{token_address}`\n\n"
+            f"💰 Выбранная сумма: {amount_sol} SOL\n"
+            f"⚙️ Slippage: {slippage}%\n\n"
+            f"📊 Информация о токене:\n"
+            f"• Price: ${_format_price(token_info.price_usd)}\n"
+            f"• MC: ${_format_price(token_info.market_cap)}\n"
+            f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
+            f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
+            f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
+        )
+        
+        await message.edit_text(
+            message_text,
+            reply_markup=keyboard,
+            parse_mode="MARKDOWN",
+            disable_web_page_preview=True
+        )
+        
+    except Exception as e:
+        logger.error(f"Error showing buy menu: {e}")
+        await message.edit_text(
+            "❌ Произошла ошибка при отображении меню",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+            ])
+        )
 
 @router.callback_query(lambda c: c.data.startswith("buy_"))
 async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMContext):
@@ -414,7 +504,7 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
                 InlineKeyboardButton(text="Custom", callback_data="custom_amount")
             ],
             # Slippage
-            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="set_slippage")],
+            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")],
             # Действия
             [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
@@ -621,7 +711,7 @@ async def handle_set_auto_buy_slippage(callback: types.CallbackQuery, state: FSM
 async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Обработка выбора slippage для автобая"""
     try:
-        choice = callback.data.replace("auto_buy_slippage_", "")
+        choice = callback.data.split("_")[2]  # auto_buy_slippage_X -> X
         
         if choice == "custom":
             await callback.message.edit_text(

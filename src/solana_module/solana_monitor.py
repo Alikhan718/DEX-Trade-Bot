@@ -75,7 +75,7 @@ class SolanaMonitor:
             logs = result.get("logs", [])
 
             logger.info(f"[MONITOR] Extracted signature: {signature}")
-            logger.info(f"[MONITOR] Transaction logs: {json.dumps(logs, indent=2)}")
+            # logger.info(f"[MONITOR] Transaction logs: {json.dumps(logs, indent=2)}")
 
             # Infer transaction type from logs
             tx_type = self.infer_type_from_logs(logs)
