@@ -6,11 +6,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class DatabaseMiddleware(BaseMiddleware):
     def __init__(self, session_factory):
         self.session_factory = session_factory
         super().__init__()
-        
+
     async def __call__(
         self,
         handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -25,4 +26,6 @@ class DatabaseMiddleware(BaseMiddleware):
                 return result
             except Exception as e:
                 logger.error(f"Error in database middleware: {e}")
-                await session.rollback() 
+                await session.rollback()
+            finally:
+                await session.close()

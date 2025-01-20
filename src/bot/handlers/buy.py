@@ -75,7 +75,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         user_id = get_real_user_id(message)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = result.unique().scalar_one_or_none()
 
         if not user:
             await message.reply("❌ Пользователь не найден")
@@ -168,7 +168,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
 
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = result.unique().scalar_one_or_none()
 
         if not user:
             logger.error(f"User not found: {user_id}")
@@ -814,7 +814,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         user_id = get_real_user_id(message)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = result.unique().scalar_one_or_none()
 
         if not user:
             logger.warning(f"User not found for auto-buy: {user_id}")

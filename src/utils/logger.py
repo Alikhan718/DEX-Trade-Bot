@@ -6,13 +6,17 @@ import os
 
 def setup_logging():
     """Настраивает логгирование для бота"""
-    # Создаем директорию для логов если её нет
+    # Удаляем существующие хендлеры
+    logger = logging.getLogger()
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Создаем директорию для логов, если её нет
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
     # Настраиваем корневой логгер
-    logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
     # Форматтер для логов

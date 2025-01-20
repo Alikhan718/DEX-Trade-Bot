@@ -6,9 +6,10 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+
 class Config:
     """Centralized configuration management with secure loading"""
-    
+
     @staticmethod
     def get_env_variable(var_name: str, default: Optional[str] = None) -> str:
         """
@@ -79,4 +80,4 @@ class Config:
                 'propagate': True
             }
         }
-    } 
+    }

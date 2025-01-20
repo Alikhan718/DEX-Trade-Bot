@@ -1,3 +1,5 @@
+import traceback
+
 import logging
 from datetime import datetime
 import asyncio
@@ -22,32 +24,34 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+
 @router.callback_query(F.data == "wallet_menu", flags={"priority": 2})
-async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: AsyncSession, solana_service: SolanaService):
+async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: AsyncSession,
+                                solana_service: SolanaService):
     """Handle wallet menu button press"""
     try:
         # Get user ID from the callback query itself, not the message
         user_id = get_real_user_id(callback_query)
         logger.info(f"Processing wallet menu for user ID: {user_id}")
-        
+
         # Get user from database
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
+        user = result.unique().scalar_one_or_none()
+
         if not user:
             # Also check the alternative ID format
             alt_id = int(str(user_id).replace("bot", ""))
             stmt = select(User).where(User.telegram_id == alt_id)
             result = await session.execute(stmt)
-            user = result.scalar_one_or_none()
-            
+            user = result.unique().scalar_one_or_none()
+
             if user:
                 # Update the ID to the current one
                 logger.info(f"Updating user ID from {user.telegram_id} to {user_id}")
                 user.telegram_id = user_id
                 await session.commit()
-        
+
         if not user:
             logger.warning(f"No user found for ID {user_id}")
             await callback_query.message.edit_text(
@@ -57,7 +61,7 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: As
                 ])
             )
             return
-        
+
         logger.info(f"Found user with wallet: {user.solana_wallet}")
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -66,12 +70,12 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: As
             ],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
         ])
-        
+
         # Get wallet balance
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
-        
+
         await callback_query.message.edit_text(
             f"💼 Управление кошельком\n\n"
             f"💳 Текущий адрес: <code>{user.solana_wallet}</code>\n"
@@ -83,8 +87,9 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: As
             reply_markup=keyboard,
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
+        traceback.print_exc()
         logger.error(f"Error in wallet menu: {e}")
         await callback_query.message.edit_text(
             "❌ Произошла ошибка при загрузке меню кошелька",
@@ -93,6 +98,7 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: As
             ])
         )
 
+
 @router.callback_query(F.data == "show_private_key", flags={"priority": 2})
 async def on_show_private_key_button(callback_query: types.CallbackQuery, session: AsyncSession):
     """Handle show private key button press"""
@@ -100,12 +106,12 @@ async def on_show_private_key_button(callback_query: types.CallbackQuery, sessio
         user_id = get_real_user_id(callback_query)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
+        user = result.unique().scalar_one_or_none()
+
         if not user:
             await callback_query.answer("❌ Пользователь не найден")
             return
-            
+
         # Показываем предупреждение перед отображением ключа
         await callback_query.message.edit_text(
             "⚠️ ВНИМАНИЕ! ВАЖНАЯ ИНФОРМАЦИЯ О БЕЗОПАСНОСТИ!\n\n"
@@ -123,13 +129,14 @@ async def on_show_private_key_button(callback_query: types.CallbackQuery, sessio
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="wallet_menu")]
             ])
         )
-        
+
         # Устанавливаем таймер на удаление сообщения
         asyncio.create_task(delete_message_after_delay(callback_query.message, 30))
-        
+
     except Exception as e:
         logger.error(f"Error showing private key: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+
 
 @router.callback_query(lambda c: c.data == "delete_key_message")
 async def on_delete_key_message(callback_query: types.CallbackQuery):
@@ -140,6 +147,7 @@ async def on_delete_key_message(callback_query: types.CallbackQuery):
         logger.error(f"Error deleting key message: {e}")
         await callback_query.answer("❌ Не удалось удалить сообщение")
 
+
 async def delete_message_after_delay(message: types.Message, delay: int):
     """Delete message after specified delay in seconds"""
     await asyncio.sleep(delay)
@@ -147,6 +155,7 @@ async def delete_message_after_delay(message: types.Message, delay: int):
         await message.delete()
     except Exception as e:
         logger.error(f"Error auto-deleting key message: {e}")
+
 
 @router.callback_query(F.data == "import_wallet", flags={"priority": 2})
 async def on_import_wallet_button(callback_query: types.CallbackQuery, state: FSMContext):
@@ -168,6 +177,7 @@ async def on_import_wallet_button(callback_query: types.CallbackQuery, state: FS
         logger.error(f"Error in import wallet button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
+
 @router.message(WalletStates.waiting_for_private_key)
 async def handle_private_key_input(message: types.Message, state: FSMContext, session: AsyncSession):
     """Handle private key input for wallet import"""
@@ -175,31 +185,31 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
         private_key_str = message.text.strip()
         logger.info("[WALLET] Starting private key validation")
         logger.debug(f"[WALLET] Private key string length: {len(private_key_str)}")
-        
+
         # Validate and convert private key
         try:
             # Split and convert to integers
             key_parts = private_key_str.split(',')
             logger.debug(f"[WALLET] Split private key into {len(key_parts)} parts")
-            
+
             # Validate key length
             if len(key_parts) != 64:
                 logger.error(f"[WALLET] Invalid key length: {len(key_parts)} (expected 64)")
                 raise ValueError(f"Invalid private key length: {len(key_parts)}")
-            
+
             # Convert string back to bytes
             private_key_bytes = bytes([int(i) for i in key_parts])
             logger.debug(f"[WALLET] Converted to bytes with length: {len(private_key_bytes)}")
-            
+
             # Validate each byte is in valid range
             if not all(0 <= b <= 255 for b in private_key_bytes):
                 logger.error("[WALLET] Invalid byte values in private key")
                 raise ValueError("Invalid byte values in private key")
-            
+
             keypair = Keypair.from_bytes(private_key_bytes)
             public_key = str(keypair.pubkey())
             logger.info(f"[WALLET] Successfully validated keypair. Public key: {public_key}")
-            
+
             # Verify we can recreate the keypair from the string we'll store
             test_bytes = bytes([int(i) for i in private_key_str.split(',')])
             test_keypair = Keypair.from_bytes(test_bytes)
@@ -207,7 +217,7 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
                 logger.error("[WALLET] Key verification failed")
                 raise ValueError("Key verification failed")
             logger.info("[WALLET] Key verification successful")
-            
+
         except Exception as e:
             logger.error(f"[WALLET] Invalid private key format: {str(e)}")
             logger.error(f"[WALLET] Error type: {type(e).__name__}")
@@ -221,13 +231,13 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
             )
             await state.clear()
             return
-            
+
         # Update database
         user_id = get_real_user_id(message)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
+        user = result.unique().scalar_one_or_none()
+
         if not user:
             logger.info(f"[WALLET] Creating new user with ID: {user_id}")
             # Create new user if doesn't exist
@@ -248,19 +258,19 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
                 f"[WALLET] User {user_id} replacing wallet "
                 f"from {user.solana_wallet[:8]}... to {public_key[:8]}..."
             )
-            
+
             # Update existing user's wallet
             user.solana_wallet = public_key
             user.private_key = private_key_str
             user.last_activity = datetime.now()
             logger.info(f"[WALLET] User wallet updated to: {public_key}")
-        
+
         await session.commit()
         logger.info("[WALLET] Database changes committed successfully")
-        
+
         # Delete the message containing the private key for security
         await message.delete()
-        
+
         # Send success message
         await message.answer(
             "✅ Кошелек успешно импортирован!\n\n"
@@ -271,10 +281,10 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
                 [InlineKeyboardButton(text="💼 Открыть кошелек", callback_data="wallet_menu")]
             ])
         )
-        
+
         # Clear state
         await state.clear()
-        
+
     except Exception as e:
         logger.error(f"Wallet import error: {e}")
         await message.reply(
@@ -284,4 +294,4 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="wallet_menu")]
             ])
         )
-        await state.clear() 
+        await state.clear()

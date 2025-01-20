@@ -879,7 +879,7 @@ async def handle_toggle_active(callback: CallbackQuery, session: AsyncSession):
     result = await session.execute(
         select(CopyTrade).where(CopyTrade.id == copy_trade_id)
     )
-    ct = result.scalar_one_or_none()
+    ct = result.unique().scalar_one_or_none()
     
     if not ct:
         await callback.answer("Копитрейд не найден", show_alert=True)
