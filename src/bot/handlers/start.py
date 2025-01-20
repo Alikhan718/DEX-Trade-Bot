@@ -11,15 +11,49 @@ from solders.keypair import Keypair
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import F
-from sqlalchemy.orm import selectinload
 
-from ...database.models import User
-from ...services.solana import SolanaService
-from ..utils.user import get_real_user_id
+from src.database.models import User
+from src.services.solana_service import SolanaService
+from src.bot.utils.user import get_real_user_id
 
 router = Router()
 logger = logging.getLogger(__name__)
 
+main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    # Trading buttons
+    [
+        InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
+        InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
+    ],
+    # Auto-buy settings
+    [
+        InlineKeyboardButton(text="⚡️ Автобай", callback_data="auto_buy_settings")
+    ],
+    # Trading features
+    [
+        InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
+        InlineKeyboardButton(text="🧠 Smart Wallet", callback_data="smart_money")
+    ],
+    # Orders and positions
+    [
+        InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
+        InlineKeyboardButton(text="📈 Открытые Позиции", callback_data="open_positions")
+    ],
+    # Security and wallet
+    [
+        InlineKeyboardButton(text="🛡️ Проверка на скам", callback_data="rugcheck"),
+        InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu")
+    ],
+    # Settings and help
+    [
+        InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+        InlineKeyboardButton(text="❓ Помощь", callback_data="help")
+    ],
+    # Referral
+    [
+        InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral")
+    ]
+])
 
 # Высший приоритет - базовые команды
 @router.message(CommandStart(), flags={"priority": 1})
@@ -94,47 +128,11 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            # Trading buttons
-            [
-                InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
-                InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
-            ],
-            # Auto-buy settings
-            [
-                InlineKeyboardButton(text="⚡️ Автобай", callback_data="auto_buy_settings")
-            ],
-            # Trading features
-            [
-                InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
-                InlineKeyboardButton(text="🧠 Smart Wallet", callback_data="smart_money")
-            ],
-            # Orders and positions
-            [
-                InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
-                InlineKeyboardButton(text="📈 Открытые Позиции", callback_data="open_positions")
-            ],
-            # Security and wallet
-            [
-                InlineKeyboardButton(text="🛡️ Проверка на скам", callback_data="rugcheck"),
-                InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu")
-            ],
-            # Settings and help
-            [
-                InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
-                InlineKeyboardButton(text="❓ Помощь", callback_data="help")
-            ],
-            # Referral
-            [
-                InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral")
-            ]
-        ])
-
         await message.answer(
             f"💳 Баланс кошелька: {balance:.4f} SOL (${usd_balance:.2f})\n"
             f"💳 Адрес: <code>{user.solana_wallet}</code>\n\n"
             "Выберите действие:",
-            reply_markup=keyboard,
+            reply_markup=main_menu_keyboard,
             parse_mode="HTML"
         )
 
@@ -207,47 +205,11 @@ async def back_to_main_menu(callback_query: types.CallbackQuery, session: AsyncS
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            # Trading buttons
-            [
-                InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
-                InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
-            ],
-            # Auto-buy settings
-            [
-                InlineKeyboardButton(text="⚡️ Автобай", callback_data="auto_buy_settings")
-            ],
-            # Trading features
-            [
-                InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
-                InlineKeyboardButton(text="🧠 Smart Wallet", callback_data="smart_money")
-            ],
-            # Orders and positions
-            [
-                InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
-                InlineKeyboardButton(text="📈 Открытые Позиции", callback_data="open_positions")
-            ],
-            # Security and wallet
-            [
-                InlineKeyboardButton(text="🛡️ Проверка на скам", callback_data="rugcheck"),
-                InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu")
-            ],
-            # Settings and help
-            [
-                InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
-                InlineKeyboardButton(text="❓ Помощь", callback_data="help")
-            ],
-            # Referral
-            [
-                InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral")
-            ]
-        ])
-
         await callback_query.message.edit_text(
             f"💳 Баланс кошелька: {balance:.4f} SOL (${usd_balance:.2f})\n"
             f"💳 Адрес: <code>{user.solana_wallet}</code>\n\n"
             "Выберите действие:",
-            reply_markup=keyboard,
+            reply_markup=main_menu_keyboard,
             parse_mode="HTML"
         )
 

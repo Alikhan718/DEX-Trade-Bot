@@ -7,8 +7,8 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncio
 from aiogram import F
 
-from ...services.smart_money import SmartMoneyTracker
-from ..states import SmartMoneyStates
+from src.services.smart_money import SmartMoneyTracker
+from src.bot.states import SmartMoneyStates
 
 logger = logging.getLogger(__name__)
 

@@ -6,12 +6,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from ..utils.config import Config
-from ..utils.logger import setup_logging
-from ..database.models import Base
-from ..services.solana import SolanaService
-from ..services.smart_money import SmartMoneyTracker
-from ..services.rugcheck import RugCheckService
+from src.utils.config import Config
+from src.utils.logger import setup_logging
+from src.database.models import Base
+from src.services.solana_service import SolanaService
+from src.services.smart_money import SmartMoneyTracker
+from src.services.rugcheck import RugCheckService
 from .middleware import DatabaseMiddleware, ServicesMiddleware
 from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell
 from .services.copy_trade_service import CopyTradeService
@@ -38,11 +38,11 @@ class SolanaDEXBot:
             # Setup database
             self.engine = create_async_engine(
                 Config.DATABASE_URL,
-                pool_size=20,
-                max_overflow=10,
+                pool_size=99999,
+                max_overflow=10000,
                 pool_timeout=30,
                 pool_pre_ping=True,
-                pool_recycle=3600,
+                pool_recycle=30,
                 echo=False
             )
 
@@ -99,9 +99,6 @@ class SolanaDEXBot:
     async def start(self):
         """Start the bot polling"""
         try:
-            logger.info("Initializing database...")
-            await self.init_db()
-
             # Start copy trade service
             logger.info("Starting copy trade service...")
             async with self.Session() as session:

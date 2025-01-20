@@ -14,11 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from aiogram import F
 
-from ...database.models import User
-from ...services.solana import SolanaService
+from src.database.models import User
+from src.services.solana_service import SolanaService
 from solders.keypair import Keypair
 from .start import get_real_user_id
-from ..states import WalletStates
+from src.bot.states import WalletStates
 
 logger = logging.getLogger(__name__)
 

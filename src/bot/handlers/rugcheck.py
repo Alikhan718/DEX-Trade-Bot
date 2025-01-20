@@ -5,8 +5,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
 
-from ...services.rugcheck import RugCheckService
-from ..states import RugCheckStates
+from src.services.rugcheck import RugCheckService
+from src.bot.states import RugCheckStates
 
 logger = logging.getLogger(__name__)
 

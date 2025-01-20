@@ -5,9 +5,9 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from aiogram import Bot
 
-from ...solana_module.solana_client import SolanaClient
-from ...solana_module.copy_trade_manager import CopyTradeManager
-from ...database.models import CopyTrade
+from src.solana_module.solana_client import SolanaClient
+from src.solana_module.copy_trade_manager import CopyTradeManager
+from src.database.models import CopyTrade
 
 logger = logging.getLogger(__name__)
 

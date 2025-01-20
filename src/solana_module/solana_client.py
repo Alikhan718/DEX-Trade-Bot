@@ -1,7 +1,6 @@
 # solana_module/solana_client.py
 
 import asyncio
-import json
 import struct
 import os
 import sys
@@ -21,7 +20,6 @@ from solana.transaction import Transaction
 import spl.token.instructions as spl_token
 from spl.token.instructions import get_associated_token_address
 from construct import Struct, Int64ul, Flag
-from .utils import get_bonding_curve_address, find_associated_bonding_curve
 
 from tenacity import (
     retry,
@@ -35,8 +33,7 @@ from dotenv import load_dotenv
 
 import httpx  # Используется в обработке исключений
 
-from .config import COMPUTE_UNIT_PRICE
-from .utils import get_bonding_curve_address, find_associated_bonding_curve
+# COMPUTE_UNIT_PRICE  # todo change to select from bd
 
 from typing import Optional, Dict, Union
 
@@ -58,6 +55,7 @@ EXPECTED_DISCRIMINATOR = struct.pack("<Q", 6966180631402821399)
 TOKEN_DECIMALS = 6
 LAMPORTS_PER_SOL = 1_000_000_000
 
+
 class BondingCurveState:
     _STRUCT = Struct(
         "virtual_token_reserves" / Int64ul,
@@ -71,6 +69,7 @@ class BondingCurveState:
     def __init__(self, data: bytes) -> None:
         parsed = self._STRUCT.parse(data[8:])  # Пропустить первые 8 байт (дискриминатор)
         self.__dict__.update(parsed)
+
 
 class RateLimiter:
     def __init__(self, max_calls: int, period: float):
@@ -93,24 +92,28 @@ class RateLimiter:
             self.calls.append(current)
             logger.debug(f"Current call count: {len(self.calls)} within {self.period} seconds.")
 
+
 # Инициализация RateLimiter: например, max 3 вызова в секунду
 rate_limiter = RateLimiter(max_calls=3, period=1.0)
+
 
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
     await rate_limiter.acquire()
     return await request_func(*args, **kwargs)
+
 
 def is_rate_limit_error(exception):
     """
     Функция-предикат для проверки, является ли исключение ошибкой HTTP 429.
     """
     return (
-        isinstance(exception, httpx.HTTPStatusError) and
-        exception.response.status_code == 429
+            isinstance(exception, httpx.HTTPStatusError) and
+            exception.response.status_code == 429
     )
 
+
 class SolanaClient:
-    def __init__(self, compute_unit_price: int = COMPUTE_UNIT_PRICE, private_key: Optional[str] = None):
+    def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
         self.rpc_endpoint = os.getenv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
         self.compute_unit_price = compute_unit_price
         self.client = AsyncClient(self.rpc_endpoint)
@@ -124,7 +127,8 @@ class SolanaClient:
         self.PUMP_FEE = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
         self.SYSTEM_PROGRAM = Pubkey.from_string("11111111111111111111111111111111")
         self.SYSTEM_TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-        self.SYSTEM_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+        self.SYSTEM_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM = Pubkey.from_string(
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
         self.SYSTEM_RENT = Pubkey.from_string("SysvarRent111111111111111111111111111111111")
         self.SOL = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
@@ -138,41 +142,42 @@ class SolanaClient:
                 if not self._private_key:
                     logger.error("[CLIENT] No private key provided")
                     raise ValueError("Private key is required for transaction signing")
-                
+
                 logger.info("[CLIENT] Loading keypair from provided private key")
-                logger.debug(f"[CLIENT] Private key string: {self._private_key[:20]}...")  # Log first 20 chars for debugging
+                logger.debug(
+                    f"[CLIENT] Private key string: {self._private_key[:20]}...")  # Log first 20 chars for debugging
                 logger.debug(f"[CLIENT] Private key string length: {len(self._private_key)}")
-                
+
                 try:
                     # Split and convert to integers
                     key_parts = self._private_key.split(',')
                     logger.debug(f"[CLIENT] Split private key into {len(key_parts)} parts")
-                    
+
                     key_bytes = [int(i) for i in key_parts]
                     logger.debug(f"[CLIENT] Converted to bytes array with length: {len(key_bytes)}")
-                    
+
                     if len(key_bytes) != 64:
                         logger.error(f"[CLIENT] Invalid key length: {len(key_bytes)} (expected 64)")
                         raise ValueError(f"Invalid private key length: {len(key_bytes)}")
-                        
+
                 except Exception as e:
                     logger.error(f"[CLIENT] Failed to parse private key string: {str(e)}")
                     logger.error(f"[CLIENT] Key parts: {key_parts[:3]}... (showing first 3 parts)")
                     raise ValueError("Failed to parse private key string") from e
-                
+
                 try:
                     key_bytes_obj = bytes(key_bytes)
                     logger.debug(f"[CLIENT] Created bytes object with length: {len(key_bytes_obj)}")
-                    
+
                     self.payer = Keypair.from_bytes(key_bytes_obj)
                     logger.info(f"[CLIENT] Keypair loaded successfully. Public key: {self.payer.pubkey()}")
                 except Exception as e:
                     logger.error(f"[CLIENT] Failed to create keypair from bytes: {str(e)}")
                     logger.error(f"[CLIENT] First few bytes: {key_bytes_obj[:10] if key_bytes_obj else None}")
                     raise ValueError("Failed to create keypair from bytes") from e
-            
+
             return self.payer
-            
+
         except Exception as e:
             logger.error(f"[CLIENT] Error loading keypair: {str(e)}")
             logger.error(f"[CLIENT] Error type: {type(e).__name__}")
@@ -182,7 +187,8 @@ class SolanaClient:
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
         """Creates associated token account for given mint if it doesn't exist."""
         associated_token_account = get_associated_token_address(self.payer.pubkey(), mint)
-        account_info = await send_request_with_rate_limit(self.client, self.client.get_account_info, associated_token_account)
+        account_info = await send_request_with_rate_limit(self.client, self.client.get_account_info,
+                                                          associated_token_account)
         if account_info.value is None:
             logger.info("Creating associated token account...")
             create_ata_ix = spl_token.create_associated_token_account(
@@ -192,7 +198,8 @@ class SolanaClient:
             )
             compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
             tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
-            tx_ata.recent_blockhash = (await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
+            tx_ata.recent_blockhash = (
+                await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
             tx_ata.fee_payer = self.payer.pubkey()
             tx_ata.sign(self.payer)
             try:
@@ -220,7 +227,6 @@ class SolanaClient:
         stop=stop_after_attempt(5),
         reraise=True
     )
-    
     async def send_buy_transaction(self, params: dict, retries: int = 3):
         """
         Отправляет транзакцию покупки токенов.
@@ -243,17 +249,18 @@ class SolanaClient:
         for attempt in range(retries):
             try:
                 logger.info(f"Attempting to send Buy transaction {attempt + 1} of {retries}")
-                
+
                 discriminator = struct.pack("<Q", 16927863322537952870)
-                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10**6))
+                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10 ** 6))
                 max_amount_packed = struct.pack("<Q", params['max_amount_lamports'])
                 data = discriminator + token_amount_packed + max_amount_packed
 
                 buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
                 compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
-                
+
                 tx_buy = Transaction().add(buy_ix).add(compute_budget_ix)
-                tx_buy.recent_blockhash = (await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
+                tx_buy.recent_blockhash = (
+                    await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
                 tx_buy.fee_payer = self.payer.pubkey()
                 tx_buy.sign(self.payer)
 
@@ -264,24 +271,24 @@ class SolanaClient:
                     self.payer,
                     opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
                 )
-                
+
                 logger.info(f"Buy Transaction sent: https://explorer.solana.com/tx/{tx_buy_signature.value}")
-                
+
                 # Ожидание подтверждения с увеличенным таймаутом и повторными попытками
                 await self.confirm_transaction_with_delay(
                     tx_buy_signature.value,
                     max_retries=15,
                     retry_delay=6
                 )
-                
+
                 logger.info(f"Buy transaction confirmed: {tx_buy_signature.value}")
                 return tx_buy_signature.value
-                
+
             except Exception as e:
                 if attempt == retries - 1:
                     logger.error(f"Failed to send Buy transaction: {str(e)}")
                     raise
-                
+
                 logger.warning(f"Transaction attempt {attempt + 1} failed: {str(e)}. Retrying...")
                 await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
 
@@ -292,11 +299,12 @@ class SolanaClient:
         Waits for transaction confirmation with delay and retry limit.
         """
         logger.info(f"Waiting for transaction confirmation: {signature}")
-        
+
         for attempt in range(max_retries):
             try:
                 logger.info(f"Confirmation attempt {attempt + 1} for transaction {signature}")
-                response = await send_request_with_rate_limit(self.client, self.client.get_signature_statuses, [signature])
+                response = await send_request_with_rate_limit(self.client, self.client.get_signature_statuses,
+                                                              [signature])
                 if not response.value or not response.value[0]:
                     logger.info("Signature status not found. Retrying...")
                     await asyncio.sleep(retry_delay)
@@ -307,23 +315,24 @@ class SolanaClient:
                     error_msg = f"Transaction failed with error: {signature_status.err}"
                     logger.error(error_msg)
                     raise Exception(error_msg)
-                    
+
                 if signature_status.confirmation_status:
                     logger.info("Transaction successfully confirmed!")
                     logger.info(f"Current status: {signature_status.confirmation_status}")
                     return True
                 logger.info(f"Current status: {signature_status.confirmation_status}. Waiting for finalization...")
                 await asyncio.sleep(retry_delay)
-                
+
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise Exception(f"Failed to confirm transaction after {max_retries} attempts: {str(e)}")
                 logger.warning(f"Error checking transaction status: {str(e)}. Retrying...")
                 await asyncio.sleep(retry_delay)
-        
+
         raise Exception(f"Transaction confirmation timeout after {max_retries} attempts")
 
-    async def buy_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, amount: float, slippage: float = 0.25):
+    async def buy_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, amount: float,
+                        slippage: float = 0.25):
         """Executes token purchase."""
         try:
             associated_token_account = await self.create_associated_token_account(mint)
@@ -383,19 +392,22 @@ class SolanaClient:
         if curve_state.virtual_token_reserves <= 0 or curve_state.virtual_sol_reserves <= 0:
             raise ValueError("Invalid reserves state")
 
-        price = (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
+        price = (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (
+                    curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
         logger.info(f"Calculated token price: {price:.10f} SOL")
         return price
 
     async def get_account_tokens(self, account_pubkey: Pubkey) -> list:
         """Gets list of tokens owned by the account."""
         logger.info(f"Getting tokens for account: {account_pubkey}")
-        response = await send_request_with_rate_limit(self.client, self.client.get_token_accounts_by_owner, account_pubkey, TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM))
-        
+        response = await send_request_with_rate_limit(self.client, self.client.get_token_accounts_by_owner,
+                                                      account_pubkey,
+                                                      TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM))
+
         if not response.value:
             logger.info("No tokens found for this account")
             return []
-        
+
         tokens = []
         for token_account in response.value:
             token_pubkey = token_account.pubkey
@@ -404,7 +416,7 @@ class SolanaClient:
                 tokens.append(token_pubkey)
         logger.info(f"Found {len(tokens)} tokens for account {account_pubkey}")
         return tokens
-    
+
     def derive_event_authority_pda(self, bonding_curve: Pubkey, mint: Pubkey) -> Pubkey:
         """
         Деривирует PDA для event_authority с использованием сидов.
@@ -442,17 +454,17 @@ class SolanaClient:
             AccountMeta(pubkey=self.PUMP_EVENT_AUTHORITY, is_signer=False, is_writable=False),
             AccountMeta(pubkey=self.PUMP_PROGRAM, is_signer=False, is_writable=False),
         ]
-        
+
         resp = await self.client.get_token_account_balance(params['associated_token_account'])
         token_balance = int(resp.value.amount)
-        token_balance_decimal = token_balance / 10**TOKEN_DECIMALS
+        token_balance_decimal = token_balance / 10 ** TOKEN_DECIMALS
         curve_state = await self.get_pump_curve_state(params['bonding_curve'])
         token_price_sol = self.calculate_pump_curve_price(curve_state)
-        
+
         # Convert token amount to integer with decimals
-        amount = int(params['token_amount'] * 10**TOKEN_DECIMALS)
+        amount = int(params['token_amount'] * 10 ** TOKEN_DECIMALS)
         min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
-        
+
         logger.info(f"Selling {token_balance_decimal} tokens")
         logger.info(f"Minimum SOL output: {min_sol_output / LAMPORTS_PER_SOL:.10f} SOL")
 
@@ -462,7 +474,7 @@ class SolanaClient:
                 discriminator = struct.pack("<Q", 12502976635542562355)
                 data = discriminator + struct.pack("<Q", amount) + struct.pack("<Q", min_sol_output)
                 sell_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
-                
+
                 recent_blockhash = await self.client.get_latest_blockhash()
                 transaction = Transaction()
                 transaction.add(sell_ix).add(set_compute_unit_price(self.compute_unit_price))
@@ -483,7 +495,7 @@ class SolanaClient:
                     max_retries=15,
                     retry_delay=6
                 )
-                
+
                 logger.info(f"Sell transaction confirmed: {tx_sell_signature.value}")
                 return tx_sell_signature.value
 
@@ -491,13 +503,14 @@ class SolanaClient:
                 if attempt == retries - 1:
                     logger.error(f"Failed to send Sell transaction: {str(e)}")
                     raise
-                
+
                 logger.warning(f"Transaction attempt {attempt + 1} failed: {str(e)}. Retrying...")
                 await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
 
         raise Exception("Failed to send transaction after all attempts")
 
-    async def sell_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, token_amount: float, min_amount: float = 0.25):
+    async def sell_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey,
+                         token_amount: float, min_amount: float = 0.25):
         """Executes token sale."""
         try:
             associated_token_account = await self.create_associated_token_account(mint)
@@ -530,14 +543,14 @@ class SolanaClient:
         """
         try:
             associated_token_account = await self.create_associated_token_account(token_address)
-            response = await send_request_with_rate_limit(self.client, self.client.get_token_account_balance, associated_token_account)
+            response = await send_request_with_rate_limit(self.client, self.client.get_token_account_balance,
+                                                          associated_token_account)
             if response.value:
-                return float(response.value.amount) / 10**TOKEN_DECIMALS
+                return float(response.value.amount) / 10 ** TOKEN_DECIMALS
             return 0
         except Exception as e:
             logger.error(f"Failed to get token balance: {e}")
             return 0
-
 
     async def buy_token_by_signature(self, signature: str):
         """
@@ -562,11 +575,12 @@ class SolanaClient:
                         logger.error("Подпись не соответствует ожидаемой транзакции покупки.")
                         return
 
-                    token_amount = token_amount_packed / (10**TOKEN_DECIMALS)
+                    token_amount = token_amount_packed / (10 ** TOKEN_DECIMALS)
                     max_amount = max_amount_packed
 
                     # Получение аккаунтов из транзакции
-                    accounts = [AccountMeta(pubkey=Pubkey(acc), is_signer=False, is_writable=False) for acc in ix.accounts]
+                    accounts = [AccountMeta(pubkey=Pubkey(acc), is_signer=False, is_writable=False) for acc in
+                                ix.accounts]
                     mint = accounts[2].pubkey
                     bonding_curve = accounts[3].pubkey
                     associated_bonding_curve = accounts[4].pubkey
@@ -582,7 +596,6 @@ class SolanaClient:
 
         except Exception as e:
             logger.error(f"Ошибка повторного выполнения покупки токенов: {e}")
-
 
     async def sell_token_by_signature(self, signature: str):
         """
@@ -607,11 +620,12 @@ class SolanaClient:
                         logger.error("Подпись не соответствует ожидаемой транзакции продажи.")
                         return
 
-                    token_amount = token_amount_packed / (10**TOKEN_DECIMALS)
+                    token_amount = token_amount_packed / (10 ** TOKEN_DECIMALS)
                     min_sol_output = min_sol_output_packed / LAMPORTS_PER_SOL
 
                     # Получение аккаунтов из транзакции
-                    accounts = [AccountMeta(pubkey=Pubkey(acc), is_signer=False, is_writable=False) for acc in ix.accounts]
+                    accounts = [AccountMeta(pubkey=Pubkey(acc), is_signer=False, is_writable=False) for acc in
+                                ix.accounts]
                     mint = accounts[2].pubkey
                     bonding_curve = accounts[3].pubkey
                     associated_bonding_curve = accounts[4].pubkey
@@ -637,30 +651,30 @@ class SolanaClient:
         """
         try:
             logger.info(f"[CLIENT] Getting transaction info for signature: {signature}")
-            
+
             # Convert string signature to Signature object if needed
             if isinstance(signature, str):
                 signature_obj = Signature.from_string(signature)
             else:
                 signature_obj = signature  # Already a Signature object
-            
+
             # Get transaction info
             tx_info = await send_request_with_rate_limit(
                 self.client,
                 self.client.get_transaction,
                 signature_obj
             )
-            
+
             if not tx_info or not tx_info.value:
                 logger.error(f"[CLIENT] No transaction info found for signature: {signature}")
                 return None
 
             logger.info(f"[CLIENT] Successfully retrieved transaction info")
-            
+
             # Extract pre and post balances
             pre_balances = tx_info.value.transaction.meta.pre_balances
             post_balances = tx_info.value.transaction.meta.post_balances
-            
+
             # Extract mint address from transaction
             token_address = None
             if tx_info.value.transaction.transaction.message.account_keys:
@@ -668,7 +682,7 @@ class SolanaClient:
                 # Это можно увидеть из логов, где mint = "55YanwmkJQrk2SiZRKNKVbLVz7Ht33zg6RU7uYvipump"
                 # token_address = str(tx_info.value.transaction.transaction.message.account_keys[11])
                 # logger.info(f"[CLIENT] Extracted token address: {token_address}")
-            
+
                 for account_key in tx_info.value.transaction.transaction.message.account_keys:
                     logger.info(f"[CLIENT] Account key: {account_key}")
                     if check_mint(account_key):
@@ -677,7 +691,7 @@ class SolanaClient:
                         break
                     else:
                         logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
-            
+
             # Convert to dict before JSON serialization
             tx_info_dict = {
                 "amount_sol": abs(pre_balances[0] - post_balances[0]) if pre_balances and post_balances else 0,
@@ -689,10 +703,10 @@ class SolanaClient:
                     "block_time": tx_info.value.block_time
                 }
             }
-            
+
             # logger.debug(f"[CLIENT] Transaction info: {json.dumps(tx_info_dict, indent=2)}")
             return tx_info_dict
-            
+
         except Exception as e:
             logger.error(f"[CLIENT] Error getting transaction info: {str(e)}")
             logger.error(traceback.format_exc())
@@ -710,33 +724,34 @@ class SolanaClient:
         """
         try:
             logger.info(f"[CLIENT] Getting SOL balance for wallet: {wallet_address}")
-            
+
             # Convert address string to Pubkey
             pubkey = Pubkey.from_string(wallet_address)
-            
+
             # Get balance
             balance = await send_request_with_rate_limit(
                 self.client,
                 self.client.get_balance,
                 pubkey
             )
-            
+
             if balance is None:
                 logger.error(f"[CLIENT] Failed to get balance for wallet: {wallet_address}")
                 return 0
-            
+
             # Convert lamports to SOL
             balance_sol = balance.value / LAMPORTS_PER_SOL
             logger.info(f"[CLIENT] Wallet {wallet_address} has {balance_sol} SOL")
-            
+
             return balance_sol
-            
+
         except Exception as e:
             logger.error(f"[CLIENT] Error getting SOL balance: {str(e)}")
             logger.error(f"[CLIENT] Error type: {type(e).__name__}")
             import traceback
             logger.error(f"[CLIENT] Traceback: {traceback.format_exc()}")
             return 0
+
 
 def check_mint(account: Pubkey) -> bool:
     """
@@ -762,24 +777,24 @@ def check_mint(account: Pubkey) -> bool:
             "CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM",  # PUMP Fee
             "SysvarRent111111111111111111111111111111111",  # Rent Program
         }
-        
+
         # Convert account to string for comparison
         account_str = str(account)
-        
+
         # Skip known program IDs
         if account_str in EXCLUDED_PROGRAMS:
             return False
-            
+
         # Check if account ends with 'pump' (common for pump tokens)
         if account_str.lower().endswith('pump'):
             logger.info(f"[CLIENT] Found pump token: {account_str}")
             return True
-            
+
         # Additional checks can be added here based on token patterns
         # For example, checking account string length, specific prefixes, etc.
-        
+
         return False
-        
+
     except Exception as e:
         logger.error(f"[CLIENT] Error in check_mint: {str(e)}")
         return False

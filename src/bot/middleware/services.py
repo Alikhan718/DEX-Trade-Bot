@@ -3,7 +3,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 import logging
 
-from ...services.solana import SolanaService
+from ...services.solana_service import SolanaService
 from ...services.smart_money import SmartMoneyTracker
 from ...services.rugcheck import RugCheckService
 

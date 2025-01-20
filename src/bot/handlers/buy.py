@@ -1,6 +1,5 @@
 import logging
 from aiogram import Router, types, F
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,14 +7,14 @@ from sqlalchemy import select
 import re
 from typing import Union
 
-from ...services.solana import SolanaService
-from ...services.token_info import TokenInfoService
-from ...database.models import User
+from src.services.solana_service import SolanaService
+from src.services.token_info import TokenInfoService
+from src.database.models import User
 from .start import get_real_user_id
-from ...solana_module.transaction_handler import UserTransactionHandler
-from ..states import BuyStates, AutoBuySettingsStates
+from src.solana_module.transaction_handler import UserTransactionHandler
+from src.bot.states import BuyStates, AutoBuySettingsStates
 from solders.pubkey import Pubkey
-from ...solana_module.utils import get_bonding_curve_address
+from src.solana_module.utils import get_bonding_curve_address
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +24,7 @@ token_info_service = TokenInfoService()
 # Регулярное выражение для определения mint адреса
 MINT_ADDRESS_PATTERN = r'^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{44}$'
 
+
 def _is_valid_token_address(address: str) -> bool:
     """Проверяет валидность адреса токена"""
     try:
@@ -32,14 +32,16 @@ def _is_valid_token_address(address: str) -> bool:
     except Exception:
         return False
 
+
 def _format_price(amount: float) -> str:
     """Форматирует цену в читаемый вид"""
     if amount >= 1_000_000:
-        return f"{amount/1_000_000:.2f}M"
+        return f"{amount / 1_000_000:.2f}M"
     elif amount >= 1_000:
-        return f"{amount/1_000:.1f}K"
+        return f"{amount / 1_000:.1f}K"
     else:
         return f"{amount:.2f}"
+
 
 @router.callback_query(F.data == "buy", flags={"priority": 3})
 async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
@@ -58,8 +60,10 @@ async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
         logger.error(f"Error in buy button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
+
 @router.message(BuyStates.waiting_for_token, flags={"priority": 3})
-async def handle_token_input(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
+async def handle_token_input(message: types.Message, state: FSMContext, session: AsyncSession,
+                             solana_service: SolanaService):
     """Handle token address input"""
     try:
         token_address = message.text.strip()
@@ -158,6 +162,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             "Пожалуйста, попробуйте позже или обратитесь в поддержку"
         )
 
+
 @router.callback_query(lambda c: c.data == "confirm_buy", flags={"priority": 3})
 async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle buy confirmation"""
@@ -223,7 +228,6 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             # Calculate token amount from SOL amount and price
             token_amount = amount_sol / token_price_sol
 
-
             # Update success message
             await status_message.edit_text(
                 "✅ Токен успешно куплен!\n\n"
@@ -255,6 +259,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         logger.error(f"Error confirming buy: {e}")
         await callback_query.answer("❌ Произошла ошибка")
         await state.clear()
+
 
 @router.callback_query(lambda c: c.data == "buy_set_slippage", flags={"priority": 10})
 async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMContext):
@@ -296,6 +301,7 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
         logger.error(f"Error in set_slippage handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
+
 @router.callback_query(lambda c: c.data.startswith("buy_slippage_"), flags={"priority": 10})
 async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle slippage choice"""
@@ -328,6 +334,7 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
         logger.error(f"Error handling slippage choice: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
+
 @router.message(BuyStates.waiting_for_slippage)
 async def handle_custom_slippage(message: types.Message, state: FSMContext):
     """Handle custom slippage input"""
@@ -352,6 +359,7 @@ async def handle_custom_slippage(message: types.Message, state: FSMContext):
             ])
         )
 
+
 @router.callback_query(lambda c: c.data == "back_to_buy", flags={"priority": 10})
 async def handle_back_to_buy(callback_query: types.CallbackQuery, state: FSMContext):
     """Return to buy menu"""
@@ -363,6 +371,7 @@ async def handle_back_to_buy(callback_query: types.CallbackQuery, state: FSMCont
         return
     await show_buy_menu(callback_query.message, state)
     logger.info("[BUY] Showed buy menu")
+
 
 async def show_buy_menu(message: types.Message, state: FSMContext):
     """Show buy menu with current token info and settings"""
@@ -436,6 +445,7 @@ async def show_buy_menu(message: types.Message, state: FSMContext):
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
         )
+
 
 @router.callback_query(lambda c: c.data.startswith("buy_"))
 async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMContext):
@@ -552,9 +562,9 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
 
         # if not settings:
         #     Создаем настройки по умолчанию
-            # settings = AutoBuySettings(user_id=user.id)
-            # session.add(settings)
-            # await session.commit()
+        # settings = AutoBuySettings(user_id=user.id)
+        # session.add(settings)
+        # await session.commit()
 
         # Формируем клавиатуру
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -599,6 +609,7 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
         else:
             await update.reply("❌ Произошла ошибка")
 
+
 @router.callback_query(F.data == "toggle_auto_buy", flags={"priority": 3})
 async def toggle_auto_buy(callback: types.CallbackQuery, session: AsyncSession):
     """Включить/выключить автобай"""
@@ -620,6 +631,7 @@ async def toggle_auto_buy(callback: types.CallbackQuery, session: AsyncSession):
         logger.error(f"Error toggling auto-buy: {e}")
         await callback.answer("❌ Произошла ошибка")
 
+
 @router.callback_query(F.data == "set_auto_buy_amount", flags={"priority": 3})
 async def handle_set_auto_buy_amount(callback: types.CallbackQuery, state: FSMContext):
     """Установка суммы для автобая"""
@@ -635,6 +647,7 @@ async def handle_set_auto_buy_amount(callback: types.CallbackQuery, state: FSMCo
     except Exception as e:
         logger.error(f"Error in set auto-buy amount handler: {e}")
         await callback.answer("❌ Произошла ошибка")
+
 
 @router.message(AutoBuySettingsStates.ENTER_AMOUNT, flags={"priority": 3})
 async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -679,6 +692,7 @@ async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext
         await message.reply("❌ Произошла ошибка")
         await state.clear()
 
+
 @router.callback_query(F.data == "set_auto_buy_slippage", flags={"priority": 3})
 async def handle_set_auto_buy_slippage(callback: types.CallbackQuery, state: FSMContext):
     """Установка slippage для автобая"""
@@ -700,6 +714,7 @@ async def handle_set_auto_buy_slippage(callback: types.CallbackQuery, state: FSM
     except Exception as e:
         logger.error(f"Error in set auto-buy slippage handler: {e}")
         await callback.answer("❌ Произошла ошибка")
+
 
 @router.callback_query(lambda c: c.data.startswith("auto_buy_slippage_"), flags={"priority": 3})
 async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
@@ -737,6 +752,7 @@ async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: 
     except Exception as e:
         logger.error(f"Error processing auto-buy slippage choice: {e}")
         await callback.answer("❌ Произошла ошибка")
+
 
 @router.message(AutoBuySettingsStates.ENTER_SLIPPAGE, flags={"priority": 3})
 async def handle_auto_buy_slippage_input(message: types.Message, state: FSMContext, session: AsyncSession):
@@ -783,7 +799,8 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
 
 
 @router.message(flags={"allow_next": True})
-async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
+async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession,
+                          solana_service: SolanaService):
     """Автоматическая покупка при получении mint адреса"""
     try:
         # Получаем настройки автобая

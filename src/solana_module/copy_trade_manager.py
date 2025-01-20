@@ -10,7 +10,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
 from .solana_monitor import SolanaMonitor
-from ..database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User
+from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User
 from .solana_client import SolanaClient, LAMPORTS_PER_SOL
 from .utils import get_bonding_curve_address, find_associated_bonding_curve
 from solders.pubkey import Pubkey

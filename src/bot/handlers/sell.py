@@ -1,25 +1,24 @@
 import logging
 from aiogram import Router, types, F
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from solders.pubkey import Pubkey
 
-from ...services.solana import SolanaService
-from ...services.token_info import TokenInfoService
-from ...database.models import User
+from src.services.solana_service import SolanaService
+from src.services.token_info import TokenInfoService
+from src.database.models import User
 from .start import get_real_user_id
-from ...solana_module.transaction_handler import UserTransactionHandler
-from ...solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
-from ..states import SellStates
+from src.solana_module.transaction_handler import UserTransactionHandler
+from src.solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
+from src.bot.states import SellStates
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 token_info_service = TokenInfoService()
+
 
 def _is_valid_token_address(address: str) -> bool:
     """Проверяет валидность адреса токена"""
@@ -31,14 +30,16 @@ def _is_valid_token_address(address: str) -> bool:
     except Exception:
         return False
 
+
 def _format_price(amount: float) -> str:
     """Форматирует цену в читаемый вид"""
     if amount >= 1_000_000:
-        return f"{amount/1_000_000:.2f}M"
+        return f"{amount / 1_000_000:.2f}M"
     elif amount >= 1_000:
-        return f"{amount/1_000:.1f}K"
+        return f"{amount / 1_000:.1f}K"
     else:
         return f"{amount:.2f}"
+
 
 @router.callback_query(F.data == "sell", flags={"priority": 3})
 async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext):
@@ -52,17 +53,19 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext)
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
-        )   
+        )
     except Exception as e:
         logger.error(f"Error in sell button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
+
 @router.message(SellStates.waiting_for_token, flags={"priority": 2})
-async def handle_token_input(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
+async def handle_token_input(message: types.Message, state: FSMContext, session: AsyncSession,
+                             solana_service: SolanaService):
     """Handle token address input"""
     try:
         token_address = message.text.strip()
-        
+
         if not _is_valid_token_address(token_address):
             await message.reply(
                 "❌ Неверный формат адреса токена\n"
@@ -72,22 +75,22 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
                 ])
             )
             return
-            
+
         # Get user's token balance
         user_id = get_real_user_id(message)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
-        
+
         if not user:
             await message.reply("❌ Пользователь не найден")
             return
-            
+
         try:
             tx_handler = UserTransactionHandler(user.private_key)
             token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
             token_balance_decimal = float(token_balance) if token_balance else 0.0
-            
+
             if token_balance_decimal <= 0:
                 await message.reply(
                     "❌ У вас нет этого токена",
@@ -96,7 +99,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
                     ])
                 )
                 return
-                
+
         except Exception as e:
             logger.error(f"Error getting token balance: {e}")
             await message.reply(
@@ -106,12 +109,12 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
                 ])
             )
             return
-            
+
         # Get bonding curve addresses
         mint = Pubkey.from_string(token_address)
         bonding_curve, _ = get_bonding_curve_address(mint, tx_handler.client.PUMP_PROGRAM)
         associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve)
-        
+
         # Save token data to state
         await state.update_data({
             'token_address': token_address,
@@ -122,17 +125,17 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             'sell_percentage': 100,  # Default to 100%
             'slippage': 1.0  # Default slippage
         })
-        
+
         # Get current slippage from state
         data = await state.get_data()
         slippage = data.get('slippage', 1.0)  # Default to 1% if not set
-        
+
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
         if not token_info:
             await message.reply("❌ Не удалось получить информацию о токене")
             return
-            
+
         # Формируем клавиатуру
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             # Тип ордера
@@ -157,7 +160,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
         ])
-        
+
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
@@ -170,14 +173,14 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
-        
+
         await message.reply(
             message_text,
             reply_markup=keyboard,
             parse_mode="MARKDOWN",
             disable_web_page_preview=True
         )
-        
+
     except Exception as e:
         logger.error(f"Error processing token address: {e}")
         await message.reply(
@@ -187,6 +190,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             ])
         )
 
+
 @router.callback_query(lambda c: c.data == "confirm_sell")
 async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle sell confirmation"""
@@ -194,28 +198,28 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         # Get user data
         user_id = get_real_user_id(callback_query)
         logger.info(f"Processing sell confirmation for user: {user_id}")
-        
+
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
-        
+
         if not user:
             logger.error(f"User not found: {user_id}")
             await callback_query.answer("❌ Пользователь не найден")
             return
-            
+
         # Get state data
         data = await state.get_data()
         token_address = data.get("token_address")
         token_balance = data.get("token_balance", 0.0)  # Get token balance from state
         sell_percentage = data.get("sell_percentage", 100.0)  # Default to 100% if not specified
         slippage = data.get("slippage", 1.0)
-        
+
         if not token_address:
             logger.error("Missing token address")
             await callback_query.answer("❌ Не указан токен")
             return
-            
+
         # Initialize transaction handler with user's private key
         try:
             logger.info("Initializing transaction handler")
@@ -230,13 +234,13 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             "🔄 Выполняется продажа токена...\n"
             "Пожалуйста, подождите"
         )
-        
+
         # Get current token price
         mint = Pubkey.from_string(token_address)
         bonding_curve, _ = get_bonding_curve_address(mint, tx_handler.client.PUMP_PROGRAM)
         curve_state = await tx_handler.client.get_pump_curve_state(bonding_curve)
         current_price_sol = tx_handler.client.calculate_pump_curve_price(curve_state)
-        
+
         # Calculate amount of tokens to sell based on percentage or initial amount
         if sell_percentage == "initial":
             # Find the most recent buy transaction for this token
@@ -251,29 +255,29 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                     ])
                 )
                 return
-                
+
             # Calculate how many tokens we need to sell to get the same amount of SOL
             # amount_tokens = (buy_tx.amount_sol / current_price_sol)
             #
             # # Check if we have enough tokens
             # if amount_tokens > token_balance:
             #     amount_tokens = token_balance  # Sell all available tokens if not enough
-                
+
             logger.info(f"Initial sell: Selling {amount_tokens} tokens to get {buy_tx.amount_sol} SOL")
         else:
             amount_tokens = token_balance * (sell_percentage / 100.0)
-            
+
         logger.info(f"Executing sell transaction for {amount_tokens} tokens ({sell_percentage})")
-        
+
         tx_signature = await tx_handler.sell_token(
             token_address=token_address,
             amount_tokens=amount_tokens,
             slippage=slippage
         )
-        
+
         if tx_signature:
             logger.info(f"Sell transaction successful: {tx_signature}")
-            
+
             # Update success message
             sell_type = "Initial" if sell_percentage == "initial" else f"{sell_percentage}%"
             await status_message.edit_text(
@@ -301,11 +305,12 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
 
         # Clear state
         await state.clear()
-        
+
     except Exception as e:
         logger.error(f"Error confirming sell: {e}")
         await callback_query.answer("❌ Произошла ошибка")
         await state.clear()
+
 
 @router.callback_query(lambda c: c.data == "sell_set_slippage", flags={"priority": 20})
 async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMContext):
@@ -313,14 +318,14 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
     try:
         # Get current data to verify we're in sell context
         data = await state.get_data()
-        
+
         if not data.get("token_address"):
             await callback_query.answer("❌ Ошибка: не выбран токен")
             return
-            
+
         # Save sell context
         await state.update_data(menu_type="sell")
-            
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="0.5%", callback_data="sell_slippage_0.5"),
@@ -334,7 +339,7 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
             ],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_sell")]
         ])
-        
+
         await callback_query.message.edit_text(
             "⚙️ Настройка Slippage для продажи\n\n"
             "Выберите максимальное проскальзывание цены:\n"
@@ -347,18 +352,19 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
         logger.error(f"Error in set_slippage handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
+
 @router.callback_query(lambda c: c.data.startswith("sell_slippage_"), flags={"priority": 20})
 async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle slippage choice"""
     try:
         # Verify we're in sell context
         data = await state.get_data()
-        
+
         if data.get("menu_type") != "sell":
             return
-            
+
         choice = callback_query.data.split("_")[2]  # sell_slippage_X -> X
-        
+
         if choice == "custom":
             await callback_query.message.edit_text(
                 "⚙️ Пользовательский Slippage для продажи\n\n"
@@ -369,15 +375,16 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
             )
             await state.set_state(SellStates.waiting_for_slippage)
             return
-            
+
         # Convert choice to float and save to state
         slippage = float(choice)
         await state.update_data(slippage=slippage)
         await show_sell_menu(callback_query.message, state)
-            
+
     except Exception as e:
         logger.error(f"Error handling slippage choice: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+
 
 @router.callback_query(lambda c: c.data == "back_to_sell", flags={"priority": 3})
 async def handle_back_to_sell(callback_query: types.CallbackQuery, state: FSMContext):
@@ -391,13 +398,14 @@ async def handle_back_to_sell(callback_query: types.CallbackQuery, state: FSMCon
     await show_sell_menu(callback_query.message, state)
     logger.info("[SELL] Showed sell menu")
 
+
 @router.callback_query(lambda c: c.data.startswith("sell_"))
 async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle sell percentage buttons"""
     try:
         # Extract percentage from callback data
         sell_type = callback_query.data.split("_")[1]
-        
+
         if sell_type == "initial":
             # Save special type to state
             await state.update_data(sell_percentage="initial")
@@ -406,18 +414,18 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             # Convert percentage to float and save to state
             percentage = float(sell_type)
         await state.update_data(sell_percentage=percentage)
-        
+
         # Update message with selected percentage
         data = await state.get_data()
         token_address = data.get("token_address")
         slippage = data.get("slippage", 1.0)
-        
+
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
         if not token_info:
             await callback_query.answer("❌ Не удалось получить информацию о токене")
             return
-            
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             # Тип ордера
             [
@@ -456,7 +464,7 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
         ])
-        
+
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
@@ -469,17 +477,18 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
-        
+
         await callback_query.message.edit_text(
             message_text,
             reply_markup=keyboard,
             parse_mode="MARKDOWN",
             disable_web_page_preview=True
         )
-        
+
     except Exception as e:
         logger.error(f"Error handling sell percentage: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+
 
 async def show_sell_menu(message: types.Message, state: FSMContext):
     """Show sell menu with current token info and settings"""
@@ -490,7 +499,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext):
         token_balance = data.get("token_balance", 0.0)
         sell_percentage = data.get("sell_percentage", 100)
         slippage = data.get("slippage", 1.0)
-        
+
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
         if not token_info:
@@ -501,7 +510,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext):
                 ])
             )
             return
-            
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             # Тип ордера
             [
@@ -540,7 +549,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext):
             [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
         ])
-        
+
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
@@ -553,14 +562,14 @@ async def show_sell_menu(message: types.Message, state: FSMContext):
             f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
-        
+
         await message.edit_text(
             message_text,
             reply_markup=keyboard,
             parse_mode="MARKDOWN",
             disable_web_page_preview=True
         )
-        
+
     except Exception as e:
         logger.error(f"Error showing sell menu: {e}")
         await message.edit_text(
@@ -568,7 +577,8 @@ async def show_sell_menu(message: types.Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
-        ) 
+        )
+
 
 @router.message(SellStates.waiting_for_slippage)
 async def handle_custom_slippage(message: types.Message, state: FSMContext):
@@ -577,19 +587,19 @@ async def handle_custom_slippage(message: types.Message, state: FSMContext):
         slippage = float(message.text.replace(",", "."))
         if slippage <= 0 or slippage > 100:
             raise ValueError("Invalid slippage value")
-            
+
         await state.update_data(slippage=slippage)
-        
+
         # Отправляем новое сообщение об успешном изменении
         status_message = await message.answer(f"✅ Slippage установлен: {slippage}%")
-        
+
         # Показываем обновленное меню продажи
         await show_sell_menu(status_message, state)
-            
+
     except ValueError:
         await message.reply(
             "❌ Неверное значение. Введите число от 0.1 до 100:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage")]
             ])
-        ) 
+        )
