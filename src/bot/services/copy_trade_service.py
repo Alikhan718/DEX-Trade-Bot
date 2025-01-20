@@ -1,3 +1,5 @@
+import traceback
+
 import logging
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -8,7 +10,7 @@ from ...solana_module.copy_trade_manager import CopyTradeManager
 from ...database.models import CopyTrade
 
 logger = logging.getLogger(__name__)
-
+traceback.print_exc()
 class CopyTradeService:
     _instance: Optional['CopyTradeService'] = None
     _bot: Optional[Bot] = None

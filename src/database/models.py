@@ -235,13 +235,14 @@ class CopyTradeTransaction(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
 
-class Settings(Base):
+class Setting(Base):
     __tablename__ = 'settings'
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255))
     slug = Column(String(25))
     default_value = Column(JSONB)
+    user_settings = relationship("UserSettings", back_populates="setting")
 
 
 class UserSettings(Base):
@@ -254,4 +255,3 @@ class UserSettings(Base):
 
     user = relationship("User", back_populates="user_settings")
     setting = relationship("Setting", back_populates="user_settings")
-

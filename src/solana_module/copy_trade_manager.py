@@ -1,3 +1,5 @@
+import traceback
+
 import logging
 from typing import Dict, Set, Optional
 from sqlalchemy import select, func
@@ -14,7 +16,7 @@ from .utils import get_bonding_curve_address, find_associated_bonding_curve
 from solders.pubkey import Pubkey
 
 logger = logging.getLogger(__name__)
-
+traceback.print_exc()
 class CopyTradeManager:
     def __init__(self, solana_client: SolanaClient, bot: Bot):
         self.solana_client = solana_client
@@ -64,6 +66,7 @@ class CopyTradeManager:
 
         except Exception as e:
             logger.error(f"Error loading active trades: {e}")
+            traceback.print_exc()
             raise
 
     async def process_transaction(self, leader: str, tx_type: str, signature: str, token_address: str, session: AsyncSession):

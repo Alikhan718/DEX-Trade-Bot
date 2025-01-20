@@ -1,9 +1,7 @@
 import logging
 import asyncio
-from typing import Optional, Dict, Any, Callable, Awaitable
 
-from aiogram import Bot, Dispatcher, Router
-from aiogram.types import TelegramObject
+from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -13,7 +11,6 @@ from ..utils.logger import setup_logging
 from ..database.models import Base
 from ..services.solana import SolanaService
 from ..services.smart_money import SmartMoneyTracker
-from ..services.token_info import TokenInfoService
 from ..services.rugcheck import RugCheckService
 from .middleware import DatabaseMiddleware, ServicesMiddleware
 from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell

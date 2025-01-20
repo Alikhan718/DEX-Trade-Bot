@@ -7,7 +7,6 @@ sys.path.append(project_root)
 
 from sqlalchemy import create_engine, text
 from src.utils.config import Config
-from src.database import User, CopyTrader, Trade
 
 def view_database():
     """View all data in the database"""

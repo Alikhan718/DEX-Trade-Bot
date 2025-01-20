@@ -1,3 +1,5 @@
+import traceback
+
 import logging
 from aiogram import Router, types
 from aiogram.filters import Command, CommandStart
@@ -29,7 +31,7 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         # Try to find user by any possible ID
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = result.unique().scalar_one_or_none()
         
         if not user:
             # Log all existing users for debugging
@@ -136,6 +138,8 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         
     except Exception as e:
         logger.error(f"Error showing main menu: {e}")
+        traceback.print_exc()
+
         await message.answer(
             "❌ Произошла ошибка при загрузке меню.\n"
             "Пожалуйста, попробуйте позже или обратитесь в поддержку."
