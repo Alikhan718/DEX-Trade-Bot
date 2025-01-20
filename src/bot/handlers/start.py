@@ -11,6 +11,7 @@ from solders.keypair import Keypair
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import F
+from sqlalchemy.orm import selectinload
 
 from ...database.models import User
 from ...services.solana import SolanaService
@@ -29,7 +30,11 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         logger.info(f"Processing start command for user ID: {user_id}")
         
         # Try to find user by any possible ID
-        stmt = select(User).where(User.telegram_id == user_id)
+        stmt = select(User).where(User.telegram_id == user_id).options(
+            selectinload(User.user_settings),
+            selectinload(User.referred_users),
+            selectinload(User.referrer)
+        )
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
         
@@ -44,9 +49,13 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
             
             # Also check the alternative ID format
             alt_id = int(str(user_id).replace("bot", ""))
-            stmt = select(User).where(User.telegram_id == alt_id)
+            stmt = select(User).where(User.telegram_id == alt_id).options(
+                selectinload(User.user_settings),
+                selectinload(User.referred_users),
+                selectinload(User.referrer)
+            )
             result = await session.execute(stmt)
-            user = result.scalar_one_or_none()
+            user = result.unique().scalar_one_or_none()
             
             if user:
                 # Update the ID to the current one
@@ -186,9 +195,14 @@ async def back_to_main_menu(callback_query: types.CallbackQuery, session: AsyncS
     """Возврат в главное меню"""
     try:
         user_id = get_real_user_id(callback_query)
-        stmt = select(User).where(User.telegram_id == user_id)
+        # Изменяем запрос, чтобы избежать проблем с eager loading
+        stmt = select(User).where(User.telegram_id == user_id).options(
+            selectinload(User.user_settings),
+            selectinload(User.referred_users),
+            selectinload(User.referrer)
+        )
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = result.unique().scalar_one_or_none()
         await state.clear()
         
         if not user:
