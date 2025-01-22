@@ -3,6 +3,7 @@ import aiohttp
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
+from src.solana_module.solana_analyzer import token_info
 
 logger = logging.getLogger(__name__)
 
@@ -40,27 +41,43 @@ class TokenInfoService:
             await self._ensure_session()
 
             # Получаем данные с pump.fun
-            async with self.session.get(f"https://api.pump.fun/token/{token_address}") as response:
-                if response.status == 200:
-                    data = await response.json()
 
-                    token_info = TokenInfo(
-                        name=data.get("name", "Unknown Token"),
-                        symbol=data.get("symbol", "???"),
-                        price_usd=float(data.get("price", 0)),
-                        market_cap=float(data.get("marketCap", 0)),
-                        is_renounced=data.get("isRenounced", False),
-                        is_burnt=data.get("isBurnt", False),
-                        address=token_address
-                    )
+            token_json = token_info(token_address)
+            print(token_json)
+            token_json_obj = TokenInfo(
+                name=token_json.get("baseToken", []).get("name", "Unknown Token"),
+                symbol=token_json.get("baseToken", []).get("symbol", "???"),
+                price_usd=float(token_json.get("priceUsd", 0)),
+                market_cap=float(token_json.get("marketCap", 0)),
+                is_renounced=token_json.get("isRenounced", False),
+                is_burnt=token_json.get("isBurnt", False),
+                address=token_address
+            )
+            print(token_json_obj)
+            # self.cache[token_address] = (token_info, datetime.now().timestamp())
+            return token_json_obj
 
-                    # Кэшируем результат
-                    self.cache[token_address] = (token_info, datetime.now().timestamp())
-
-                    return token_info
-                else:
-                    logger.warning(f"Failed to get token info: {response.status}")
-                    return self._get_default_token_info(token_address)
+            # async with self.session.get(f"https://api.pump.fun/token/{token_address}") as response:
+            #     if response.status == 200:
+            #         data = await response.json()
+            #
+            #         token_info = TokenInfo(
+            #             name=data.get("name", "Unknown Token"),
+            #             symbol=data.get("symbol", "???"),
+            #             price_usd=float(data.get("price", 0)),
+            #             market_cap=float(data.get("marketCap", 0)),
+            #             is_renounced=data.get("isRenounced", False),
+            #             is_burnt=data.get("isBurnt", False),
+            #             address=token_address
+            #         )
+            #
+            #         # Кэшируем результат
+            #         self.cache[token_address] = (token_info, datetime.now().timestamp())
+            #
+            #         return token_info
+            #     else:
+            #         logger.warning(f"Failed to get token info: {response.status}")
+            #         return self._get_default_token_info(token_address)
 
         except Exception as e:
             logger.error(f"Error getting token info: {e}")

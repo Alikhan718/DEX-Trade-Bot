@@ -15,6 +15,7 @@ from src.solana_module.transaction_handler import UserTransactionHandler
 from src.bot.states import BuyStates, AutoBuySettingsStates
 from solders.pubkey import Pubkey
 from src.solana_module.utils import get_bonding_curve_address
+from ..crud import get_user_setting, update_user_setting
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +34,14 @@ def _is_valid_token_address(address: str) -> bool:
         return False
 
 
-def _format_price(amount: float) -> str:
+def _format_price(amount: float, format_length=2) -> str:
     """Форматирует цену в читаемый вид"""
     if amount >= 1_000_000:
-        return f"{amount / 1_000_000:.2f}M"
+        return f"{amount / 1_000_000:.{format_length}f}M"
     elif amount >= 1_000:
         return f"{amount / 1_000:.1f}K"
     else:
-        return f"{amount:.2f}"
+        return f"{amount:.{format_length}f}"
 
 
 @router.callback_query(F.data == "buy", flags={"priority": 3})
@@ -195,8 +196,9 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
 
         # Initialize transaction handler with user's private key
         try:
+            buy_settings = await get_user_setting(user_id, 'buy', session)
             logger.info("Initializing transaction handler")
-            tx_handler = UserTransactionHandler(user.private_key)
+            tx_handler = UserTransactionHandler(user.private_key, buy_settings['gas_fee'])
         except ValueError:
             logger.error("Failed to initialize transaction handler")
             await callback_query.answer("❌ Ошибка инициализации кошелька")
@@ -556,6 +558,8 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
                 await update.reply("❌ Пользователь не найден")
             return
 
+        settings = await get_user_setting(user_id, 'auto_buy', session)
+
         # settings = await session.scalar(
         #     select(AutoBuySettings).where(AutoBuySettings.user_id == user.id)
         # )
@@ -569,18 +573,15 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
         # Формируем клавиатуру
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text=f"{'🔴'} Автобай",
-                # text=f"{'🟢' if settings.enabled else '🔴'} Автобай",
+                text=f"{'🟢' if settings['enabled'] else '🔴'} Автобай",
                 callback_data="toggle_auto_buy"
             )],
             [InlineKeyboardButton(
-                text=f"💰 Сумма: СУММА SOL",
-                # text=f"💰 Сумма: {settings.amount_sol} SOL",
+                text=f"💰 Сумма: {settings['amount_sol']} SOL",
                 callback_data="set_auto_buy_amount"
             )],
             [InlineKeyboardButton(
-                text=f"⚙️ Slippage: SLIP%",
-                # text=f"⚙️ Slippage: {settings.slippage}%",
+                text=f"⚙️ Slippage: {settings['slippage']}%",
                 callback_data="set_auto_buy_slippage"
             )],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
@@ -588,12 +589,9 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
 
         text = (
             "⚡️ Настройки Автобая\n\n"
-            f"Статус: {'Выключен'}\n"
-            f"Сумма покупки: СУММА SOL\n"
-            f"Slippage: SLIP%\n"
-            # f"Статус: {'Включен' if settings.enabled else 'Выключен'}\n"
-            # f"Сумма покупки: {settings.amount_sol} SOL\n"
-            # f"Slippage: {settings.slippage}%\n"
+            f"Статус: {'Включен' if settings['enabled'] else 'Выключен'}\n"
+            f"Сумма покупки: {settings['amount_sol']} SOL\n"
+            f"Slippage: {settings['slippage']}%\n"
         )
 
         # Отправляем или редактируем сообщение в зависимости от типа объекта
@@ -614,18 +612,11 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
 async def toggle_auto_buy(callback: types.CallbackQuery, session: AsyncSession):
     """Включить/выключить автобай"""
     try:
-        pass
-        # settings = await session.scalar(
-        #     select(AutoBuySettings)
-        #     .join(User)
-        #     .where(User.telegram_id == callback.from_user.id)
-        # )
-        #
-        # if settings:
-        #     settings.enabled = not settings.enabled
-        #     await session.commit()
-        #
-        # await show_auto_buy_settings(callback, session)
+        user_id = get_real_user_id(callback)
+        settings = await get_user_setting(user_id, 'auto_buy', session)
+        settings['enabled'] = not settings['enabled']
+        await update_user_setting(user_id, 'auto_buy', settings, session)
+        await show_auto_buy_settings(callback, session)
 
     except Exception as e:
         logger.error(f"Error toggling auto-buy: {e}")
@@ -667,17 +658,10 @@ async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext
                 ])
             )
             return
-
-        # Обновляем настройки в БД
-        # settings = await session.scalar(
-        #     select(AutoBuySettings)
-        #     .join(User)
-        #     .where(User.telegram_id == message.from_user.id)
-        # )
-
-        # if settings:
-        #     settings.amount_sol = amount
-        #     await session.commit()
+        user_id = get_real_user_id(message)
+        settings = await get_user_setting(user_id, 'auto_buy', session)
+        settings['amount_sol'] = amount
+        await update_user_setting(user_id, 'auto_buy', settings, session)
 
         # Очищаем состояние и показываем обновленные настройки
         await state.clear()
@@ -720,8 +704,8 @@ async def handle_set_auto_buy_slippage(callback: types.CallbackQuery, state: FSM
 async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Обработка выбора slippage для автобая"""
     try:
-        choice = callback.data.split("_")[2]  # auto_buy_slippage_X -> X
-
+        choice = callback.data.split("_")[3]  # auto_buy_slippage_X -> X
+        print("\n\nCHOICE", choice, "\n\n")
         if choice == "custom":
             await callback.message.edit_text(
                 "⚙️ Введите значение slippage (в процентах)\n"
@@ -735,18 +719,11 @@ async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: 
 
         # Если выбрано предустановленное значение
         slippage = float(choice)
-
-        # Обновляем настройки в БД
-        # settings = await session.scalar(
-        #     select(AutoBuySettings)
-        #     .join(User)
-        #     .where(User.telegram_id == callback.from_user.id)
-        # )
-
-        # if settings:
-        #     settings.slippage = slippage
-        #     await session.commit()
-
+        print(slippage)
+        user_id = get_real_user_id(callback)
+        settings = await get_user_setting(user_id, 'auto_buy', session)
+        settings['slippage'] = slippage
+        await update_user_setting(user_id, 'auto_buy', settings, session)
         await show_auto_buy_settings(callback, session)
 
     except Exception as e:
@@ -772,19 +749,11 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
                 ])
             )
             return
-
-        # Обновляем настройки в БД
-        # settings = await session.scalar(
-        #     select(AutoBuySettings)
-        #     .join(User)
-        #     .where(User.telegram_id == message.from_user.id)
-        # )
-
-        # if settings:
-        #     settings.slippage = slippage
-        #     await session.commit()
-
-        # Очищаем состояние и показываем обновленные настройки
+        slippage = float(slippage)
+        user_id = get_real_user_id(message)
+        settings = await get_user_setting(user_id, 'auto_buy', session)
+        settings['slippage'] = slippage
+        await update_user_setting(user_id, 'auto_buy', settings, session)
         await state.clear()
         await message.answer(
             f"✅ Slippage установлен: {slippage}%"

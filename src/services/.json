@@ -1,0 +1,30 @@
+{
+  "platformId": 16,
+  "platformName": "Solana",
+  "baseTokenSymbol": "🛡️",
+  "quoteTokenSymbol": "SOL",
+  "liquidity": "8216.41130350862",
+  "pairContractAddress": "GrfZpwGi9xN7oCqUcK4Z3iYHY3MLkYBgnoMyhEWJBkjx",
+  "platFormCryptoId": 5426,
+  "exchangeId": 10979,
+  "poolId": "21235624",
+  "baseTokenName": "VERITAS ÆTERNUM ",
+  "marketCap": "8339.420493265",
+  "priceUsd": "0.000008339420493265",
+  "priceChange24h": "0",
+  "baseToken": {
+    "name": "VERITAS ÆTERNUM ",
+    "address": "HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump",
+    "symbol": "🛡️",
+    "decimals": 6,
+    "logoUrl": "https://s3.coinmarketcap.com/dexer/token/0bde23d985ff3c2a83f26cc90a7b6a8a.jpg"
+  },
+  "quoteToken": {
+    "name": "SOL",
+    "address": "So11111111111111111111111111111111111111111",
+    "symbol": "SOL",
+    "decimals": 9
+  },
+  "volume24h": "0",
+  "volumeQuote24h": "0"
+}

@@ -1,6 +1,9 @@
 # solana_module/utils.py
-
+from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
+
+from solana_client import BondingCurveState, EXPECTED_DISCRIMINATOR, LAMPORTS_PER_SOL, TOKEN_DECIMALS
+
 
 def get_bonding_curve_address(mint: Pubkey, program_id: Pubkey) -> tuple[Pubkey, int]:
     """
@@ -14,6 +17,7 @@ def get_bonding_curve_address(mint: Pubkey, program_id: Pubkey) -> tuple[Pubkey,
         program_id
     )
 
+
 def find_associated_bonding_curve(mint: Pubkey, bonding_curve: Pubkey) -> Pubkey:
     """
     Находит ассоциированную кривую связывания для данного mint и кривой связывания.
@@ -25,7 +29,7 @@ def find_associated_bonding_curve(mint: Pubkey, bonding_curve: Pubkey) -> Pubkey
         [
             bytes(bonding_curve),
             bytes(TOKEN_PROGRAM_ID),
-            bytes(mint), 
+            bytes(mint),
         ],
         ATA_PROGRAM_ID
     )
@@ -50,4 +54,5 @@ def calculate_bonding_curve_price(curve_state: BondingCurveState) -> float:
     if curve_state.virtual_token_reserves <= 0 or curve_state.virtual_sol_reserves <= 0:
         raise ValueError("Invalid reserve state")
 
-    return (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
+    return (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (
+                curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)

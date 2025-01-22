@@ -208,7 +208,8 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         # Initialize transaction handler with user's private key
         try:
             logger.info("Initializing transaction handler")
-            tx_handler = UserTransactionHandler(user.private_key)
+            sell_settings = await get_user_setting(user_id, 'sell', session)
+            tx_handler = UserTransactionHandler(user.private_key, sell_settings['gas_fee'])
         except ValueError:
             logger.error("Failed to initialize transaction handler")
             await callback_query.answer("❌ Ошибка инициализации кошелька")
