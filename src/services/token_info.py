@@ -6,6 +6,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class TokenInfo:
     name: str
@@ -15,6 +16,7 @@ class TokenInfo:
     is_renounced: bool
     is_burnt: bool
     address: str
+
 
 class TokenInfoService:
     def __init__(self):
@@ -41,7 +43,7 @@ class TokenInfoService:
             async with self.session.get(f"https://api.pump.fun/token/{token_address}") as response:
                 if response.status == 200:
                     data = await response.json()
-                    
+
                     token_info = TokenInfo(
                         name=data.get("name", "Unknown Token"),
                         symbol=data.get("symbol", "???"),
@@ -51,10 +53,10 @@ class TokenInfoService:
                         is_burnt=data.get("isBurnt", False),
                         address=token_address
                     )
-                    
+
                     # Кэшируем результат
                     self.cache[token_address] = (token_info, datetime.now().timestamp())
-                    
+
                     return token_info
                 else:
                     logger.warning(f"Failed to get token info: {response.status}")
@@ -80,4 +82,4 @@ class TokenInfoService:
         """Закрывает сессию"""
         if self.session:
             await self.session.close()
-            self.session = None 
+            self.session = None

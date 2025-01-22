@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
-from ..utils.config import Config
+from src.utils.config import Config
 
 # Create base class for models
 Base = declarative_base()
@@ -11,11 +11,11 @@ Base = declarative_base()
 engine = create_async_engine(
     Config.DATABASE_URL,
     echo=False,  # Disable SQL query logging in production
-    pool_size=20,
-    max_overflow=10,
+    pool_size=99999,
+    max_overflow=10000,
     pool_timeout=30,
     pool_pre_ping=True,
-    pool_recycle=3600
+    pool_recycle=30
 )
 
 # Create session factory
@@ -27,10 +27,12 @@ async_session = sessionmaker(
     autoflush=False
 )
 
+
 async def init_models():
     """Initialize database models"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
 
 async def get_session() -> AsyncSession:
     """Get database session"""
@@ -42,4 +44,4 @@ async def get_session() -> AsyncSession:
             await session.rollback()
             raise
         finally:
-            await session.close() 
+            await session.close()

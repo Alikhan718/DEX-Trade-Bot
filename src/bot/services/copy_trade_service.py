@@ -1,18 +1,21 @@
+import traceback
+
 import logging
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from aiogram import Bot
 
-from ...solana_module.solana_client import SolanaClient
-from ...solana_module.copy_trade_manager import CopyTradeManager
-from ...database.models import CopyTrade
+from src.solana_module.solana_client import SolanaClient
+from src.solana_module.copy_trade_manager import CopyTradeManager
+from src.database.models import CopyTrade
 
 logger = logging.getLogger(__name__)
+
 
 class CopyTradeService:
     _instance: Optional['CopyTradeService'] = None
     _bot: Optional[Bot] = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -39,19 +42,19 @@ class CopyTradeService:
 
             # Initialize manager with bot instance
             self.manager = CopyTradeManager(self.solana_client, self._bot)
-            
+
             # Store session factory
             self.Session = async_sessionmaker(
                 session.bind,
                 expire_on_commit=False
             )
-            
+
             # Load active trades from database
             await self.manager.load_active_trades(session)
-            
+
             # Set up transaction callback
             self.manager.monitor.set_transaction_callback(self.handle_transaction_with_session)
-            
+
             logger.info("Copy trade service started")
         except Exception as e:
             logger.error(f"Error starting copy trade service: {e}")
@@ -71,7 +74,7 @@ class CopyTradeService:
         if not self.Session:
             logger.error("Session factory not initialized")
             return
-            
+
         async with self.Session() as session:
             try:
                 await self.handle_transaction(leader, tx_type, signature, token_address, session)
@@ -81,7 +84,8 @@ class CopyTradeService:
             else:
                 await session.commit()
 
-    async def handle_transaction(self, leader: str, tx_type: str, signature: str, token_address: str, session: AsyncSession):
+    async def handle_transaction(self, leader: str, tx_type: str, signature: str, token_address: str,
+                                 session: AsyncSession):
         """Handle detected transaction"""
         try:
             await self.manager.process_transaction(leader, tx_type, signature, token_address, session)
@@ -118,4 +122,4 @@ class CopyTradeService:
             logger.info(f"Toggled copy trade {copy_trade.id} active status to {copy_trade.is_active}")
         except Exception as e:
             logger.error(f"Error toggling copy trade: {e}")
-            raise 
+            raise

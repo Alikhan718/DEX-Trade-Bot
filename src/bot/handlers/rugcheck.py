@@ -5,12 +5,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import F
 
-from ...services.rugcheck import RugCheckService
-from ..states import RugCheckStates
+from src.services.rugcheck import RugCheckService
+from src.bot.states import RugCheckStates
 
 logger = logging.getLogger(__name__)
 
 router = Router()
+
 
 def _is_valid_token_address(address: str) -> bool:
     """Проверяет валидность адреса токена"""
@@ -21,6 +22,7 @@ def _is_valid_token_address(address: str) -> bool:
         return all(c in valid_chars for c in address)
     except Exception:
         return False
+
 
 @router.callback_query(F.data == "rugcheck", flags={"priority": 5})
 async def on_rugcheck_button(callback_query: types.CallbackQuery, state: FSMContext):
@@ -38,12 +40,13 @@ async def on_rugcheck_button(callback_query: types.CallbackQuery, state: FSMCont
         logger.error(f"Error in rugcheck button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
+
 @router.message(RugCheckStates.waiting_for_token)
 async def handle_token_input(message: types.Message, state: FSMContext):
     """Обработчик ввода адреса токена для проверки"""
     try:
         token_address = message.text.strip()
-        
+
         # Проверяем валидность адреса
         if not _is_valid_token_address(token_address):
             await message.reply(
@@ -57,19 +60,19 @@ async def handle_token_input(message: types.Message, state: FSMContext):
 
         # Отправляем сообщение о начале проверки
         status_message = await message.reply("🔍 Анализируем токен...")
-        
+
         # Создаем сервис и получаем данные
         rugcheck_service = RugCheckService()
         try:
             result = await rugcheck_service.check_token(token_address)
-            
+
             # Определяем статусы и эмодзи
             verification_status = "✅ Верифицирован" if result.verification else "⚠️ Не верифицирован"
-            
+
             # Определяем статус безопасности на основе рисков
             critical_risks = sum(1 for r in result.risks if r.level == "CRITICAL")
             high_risks = sum(1 for r in result.risks if r.level == "HIGH")
-            
+
             if critical_risks > 0:
                 safety_emoji = "🚫"
                 safety_status = "КРИТИЧЕСКИ ОПАСНО! Обнаружены критические риски!"
@@ -82,7 +85,7 @@ async def handle_token_input(message: types.Message, state: FSMContext):
             else:
                 safety_emoji = "✅"
                 safety_status = "Признаков скама не обнаружено"
-            
+
             # Определяем эмодзи для скора
             if len(result.risks) == 0:
                 score_emoji = "🟢"  # Зеленый для 0 рисков
@@ -92,14 +95,14 @@ async def handle_token_input(message: types.Message, state: FSMContext):
                 score_emoji = "🟠"  # Оранжевый для высоких рисков
             else:
                 score_emoji = "🟡"  # Желтый для остальных случаев
-            
+
             # Формируем базовую информацию
             message_text = (
                 f"🛡️ Результаты проверки токена\n\n"
                 f"📍 Токен: {result.token_meta.name} ({result.token_meta.symbol})\n"
                 f"📝 Адрес: `{result.mint}`\n\n"
             )
-            
+
             # Если это не ошибка загрузки, добавляем детальную информацию
             if result.token_meta.name != "Error Loading Token":
                 message_text += (
@@ -107,13 +110,13 @@ async def handle_token_input(message: types.Message, state: FSMContext):
                     f"✨ Статус: {verification_status}\n"
                     f"{safety_emoji} Статус безопасности: {safety_status}\n"
                 )
-                
+
                 # Добавляем информацию о ликвидности, если она есть
                 if result.total_market_liquidity > 0:
                     message_text += f"💰 Ликвидность: ${result.total_market_liquidity:,.2f}\n"
-                
+
                 message_text += "\n"
-            
+
             # Добавляем информацию о рисках
             if result.risks:
                 message_text += "🔍 Обнаруженные риски:\n"
@@ -122,13 +125,13 @@ async def handle_token_input(message: types.Message, state: FSMContext):
                     message_text += f"{emoji} {risk.name}: {risk.description}\n"
             else:
                 message_text += "✅ Рисков не обнаружено\n"
-            
+
             # Добавляем рекомендации только если это не ошибка
             if result.token_meta.name != "Error Loading Token":
                 message_text += (
                     f"\n💡 Рекомендации:\n"
                 )
-                
+
                 if critical_risks > 0:
                     message_text += (
                         f"• ⚠️ КАТЕГОРИЧЕСКИ не рекомендуется для покупки!\n"
@@ -153,7 +156,7 @@ async def handle_token_input(message: types.Message, state: FSMContext):
                         f"• Используйте разумный размер позиции\n"
                         f"• Следите за обновлениями в сообществе\n"
                     )
-                
+
                 message_text += f"\n🔍 Подробный анализ: [RugCheck](https://rugcheck.xyz/tokens/{token_address})"
 
             await status_message.edit_text(
@@ -164,13 +167,13 @@ async def handle_token_input(message: types.Message, state: FSMContext):
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
                 ])
             )
-            
+
         finally:
             await rugcheck_service.close()
-        
+
         # Очищаем состояние
         await state.clear()
-        
+
     except Exception as e:
         logger.error(f"Error processing token address: {e}")
         await message.reply(
@@ -180,4 +183,4 @@ async def handle_token_input(message: types.Message, state: FSMContext):
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
         )
-        await state.clear() 
+        await state.clear()
