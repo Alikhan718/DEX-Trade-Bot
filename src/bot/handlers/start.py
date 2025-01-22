@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import F
 
+from src.bot.crud import create_initial_user_settings
 from src.database.models import User
 from src.services.solana_service import SolanaService
 from src.bot.utils.user import get_real_user_id
@@ -70,14 +71,6 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         user = result.unique().scalar_one_or_none()
 
         if not user:
-            # Log all existing users for debugging
-            stmt = select(User)
-            result = await session.execute(stmt)
-            all_users = result.unique().scalars().all()
-            logger.info("Current users in database:")
-            for u in all_users:
-                logger.info(f"ID: {u.telegram_id}, Wallet: {u.solana_wallet}")
-
             # Also check the alternative ID format
             alt_id = int(str(user_id).replace("bot", ""))
             stmt = select(User).where(User.telegram_id == alt_id)
@@ -127,7 +120,7 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
-
+        await create_initial_user_settings(user_id, session)
         await message.answer(
             f"💳 Баланс кошелька: {balance:.4f} SOL (${usd_balance:.2f})\n"
             f"💳 Адрес: <code>{user.solana_wallet}</code>\n\n"

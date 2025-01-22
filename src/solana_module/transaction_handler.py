@@ -3,8 +3,8 @@ from typing import Optional
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 # COMPUTE_UNIT_PRICE  # todo: change to select from db
-from solana_client import SolanaClient
-from utils import get_bonding_curve_address, find_associated_bonding_curve
+from .solana_client import SolanaClient
+from .utils import get_bonding_curve_address, find_associated_bonding_curve
 
 logger = logging.getLogger(__name__)
 

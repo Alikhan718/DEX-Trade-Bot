@@ -13,6 +13,7 @@ from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
 from src.bot.states import SellStates
+from src.bot.crud import get_user_setting, update_user_setting
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,9 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             return
 
         try:
-            tx_handler = UserTransactionHandler(user.private_key)
+            sell_settings = await get_user_setting(user_id, 'sell', session)
+            print(sell_settings)
+            tx_handler = UserTransactionHandler(user.private_key, sell_settings['gas_fee'])
             token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
             token_balance_decimal = float(token_balance) if token_balance else 0.0
 
@@ -116,6 +119,8 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve)
 
         # Save token data to state
+        result = await get_user_setting(user_id, 'sell', session)
+        slippage = result['slippage']
         await state.update_data({
             'token_address': token_address,
             'bonding_curve': str(bonding_curve),
@@ -123,13 +128,10 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             'token_balance': token_balance_decimal,
             'operation_context': 'sell',  # Set operation context to sell
             'sell_percentage': 100,  # Default to 100%
-            'slippage': 1.0  # Default slippage
+            'slippage': slippage  # Default slippage
         })
 
-        # Get current slippage from state
-        data = await state.get_data()
-        slippage = data.get('slippage', 1.0)  # Default to 1% if not set
-
+        sell_percentage = 100
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
         if not token_info:
@@ -137,29 +139,12 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             return
 
         # Формируем клавиатуру
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            # Тип ордера
-            [
-                InlineKeyboardButton(text="🔴 Продать", callback_data="market_sell"),
-                InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_sell")
-            ],
-            # Предустановленные проценты
-            [
-                InlineKeyboardButton(text="Initial", callback_data="sell_initial"),
-                InlineKeyboardButton(text="25%", callback_data="sell_25"),
-                InlineKeyboardButton(text="50%", callback_data="sell_50")
-            ],
-            [
-                InlineKeyboardButton(text="75%", callback_data="sell_75"),
-                InlineKeyboardButton(text="100%", callback_data="sell_100"),
-                InlineKeyboardButton(text="Custom", callback_data="custom_amount")
-            ],
-            # Slippage
-            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="sell_set_slippage")],
-            # Действия
-            [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-        ])
+        user_id = get_real_user_id(message)
+        stmt = select(User.last_buy_amount).where(User.id == user_id)
+        result = await session.execute(stmt)
+        last_buy_amount = result.scalar()
+
+        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -354,7 +339,7 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
 
 
 @router.callback_query(lambda c: c.data.startswith("sell_slippage_"), flags={"priority": 20})
-async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSMContext):
+async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle slippage choice"""
     try:
         # Verify we're in sell context
@@ -378,8 +363,13 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
 
         # Convert choice to float and save to state
         slippage = float(choice)
+        user_id = get_real_user_id(callback_query)
+
+        sell_setting = await get_user_setting(user_id, 'sell', session)
+        sell_setting['slippage'] = slippage
+        await update_user_setting(user_id, 'sell', sell_setting, session)
         await state.update_data(slippage=slippage)
-        await show_sell_menu(callback_query.message, state)
+        await show_sell_menu(callback_query.message, state, session)
 
     except Exception as e:
         logger.error(f"Error handling slippage choice: {e}")
@@ -387,7 +377,7 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
 
 
 @router.callback_query(lambda c: c.data == "back_to_sell", flags={"priority": 3})
-async def handle_back_to_sell(callback_query: types.CallbackQuery, state: FSMContext):
+async def handle_back_to_sell(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Return to sell menu"""
     logger.info("[SELL] Handling back_to_sell")
     data = await state.get_data()
@@ -395,12 +385,12 @@ async def handle_back_to_sell(callback_query: types.CallbackQuery, state: FSMCon
     if data.get("menu_type") != "sell":
         logger.warning(f"[SELL] Wrong menu type: {data.get('menu_type')}")
         return
-    await show_sell_menu(callback_query.message, state)
+    await show_sell_menu(callback_query.message, state, session)
     logger.info("[SELL] Showed sell menu")
 
 
 @router.callback_query(lambda c: c.data.startswith("sell_"))
-async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSMContext):
+async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle sell percentage buttons"""
     try:
         # Extract percentage from callback data
@@ -410,6 +400,16 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             # Save special type to state
             await state.update_data(sell_percentage="initial")
             percentage = "initial"
+        elif sell_type == "custom":
+            await callback_query.message.edit_text(
+                "⚙️ Процент для продажи\n\n"
+                "Введите значение в процентах (например, 50%):",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_sell")]
+                ])
+            )
+            await state.set_state(SellStates.waiting_for_percentage)
+            return
         else:
             # Convert percentage to float and save to state
             percentage = float(sell_type)
@@ -426,44 +426,12 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             await callback_query.answer("❌ Не удалось получить информацию о токене")
             return
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            # Тип ордера
-            [
-                InlineKeyboardButton(text="🔴 Продать", callback_data="market_sell"),
-                InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_sell")
-            ],
-            # Предустановленные проценты с отметкой выбранной
-            [
-                InlineKeyboardButton(
-                    text=f"✓ Initial" if percentage == "initial" else "Initial",
-                    callback_data="sell_initial"
-                ),
-                InlineKeyboardButton(
-                    text=f"✓ 25%" if percentage == 25 else "25%",
-                    callback_data="sell_25"
-                ),
-                InlineKeyboardButton(
-                    text=f"✓ 50%" if percentage == 50 else "50%",
-                    callback_data="sell_50"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"✓ 75%" if percentage == 75 else "75%",
-                    callback_data="sell_75"
-                ),
-                InlineKeyboardButton(
-                    text=f"✓ 100%" if percentage == 100 else "100%",
-                    callback_data="sell_100"
-                ),
-                InlineKeyboardButton(text="Custom", callback_data="custom_amount")
-            ],
-            # Slippage
-            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="sell_set_slippage")],
-            # Действия
-            [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-        ])
+        user_id = get_real_user_id(callback_query)
+        stmt = select(User.last_buy_amount).where(User.id == user_id)
+        result = await session.execute(stmt)
+        last_buy_amount = result.scalar()
+
+        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, percentage)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -490,7 +458,7 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
         await callback_query.answer("❌ Произошла ошибка")
 
 
-async def show_sell_menu(message: types.Message, state: FSMContext):
+async def show_sell_menu(message: types.Message, state: FSMContext, session: AsyncSession):
     """Show sell menu with current token info and settings"""
     try:
         # Get current data
@@ -510,45 +478,12 @@ async def show_sell_menu(message: types.Message, state: FSMContext):
                 ])
             )
             return
+        user_id = get_real_user_id(message)
+        stmt = select(User.last_buy_amount).where(User.id == user_id)
+        result = await session.execute(stmt)
+        last_buy_amount = result.scalar()
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            # Тип ордера
-            [
-                InlineKeyboardButton(text="🔴 Продать", callback_data="market_sell"),
-                InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_sell")
-            ],
-            # Предустановленные проценты
-            [
-                InlineKeyboardButton(
-                    text=f"✓ Initial" if sell_percentage == "initial" else "Initial",
-                    callback_data="sell_initial"
-                ),
-                InlineKeyboardButton(
-                    text=f"✓ 25%" if sell_percentage == 25 else "25%",
-                    callback_data="sell_25"
-                ),
-                InlineKeyboardButton(
-                    text=f"✓ 50%" if sell_percentage == 50 else "50%",
-                    callback_data="sell_50"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"✓ 75%" if sell_percentage == 75 else "75%",
-                    callback_data="sell_75"
-                ),
-                InlineKeyboardButton(
-                    text=f"✓ 100%" if sell_percentage == 100 else "100%",
-                    callback_data="sell_100"
-                ),
-                InlineKeyboardButton(text="Custom", callback_data="custom_amount")
-            ],
-            # Slippage
-            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="sell_set_slippage")],
-            # Действия
-            [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-        ])
+        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -581,20 +516,23 @@ async def show_sell_menu(message: types.Message, state: FSMContext):
 
 
 @router.message(SellStates.waiting_for_slippage)
-async def handle_custom_slippage(message: types.Message, state: FSMContext):
+async def handle_custom_slippage(message: types.Message, state: FSMContext, session: AsyncSession):
     """Handle custom slippage input"""
     try:
         slippage = float(message.text.replace(",", "."))
         if slippage <= 0 or slippage > 100:
             raise ValueError("Invalid slippage value")
-
+        user_id = get_real_user_id(message)
+        sell_setting = await get_user_setting(user_id, 'sell', session)
+        sell_setting['slippage'] = slippage
+        await update_user_setting(user_id, 'sell', sell_setting, session)
         await state.update_data(slippage=slippage)
 
         # Отправляем новое сообщение об успешном изменении
         status_message = await message.answer(f"✅ Slippage установлен: {slippage}%")
 
         # Показываем обновленное меню продажи
-        await show_sell_menu(status_message, state)
+        await show_sell_menu(status_message, state, session)
 
     except ValueError:
         await message.reply(
@@ -603,3 +541,72 @@ async def handle_custom_slippage(message: types.Message, state: FSMContext):
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage")]
             ])
         )
+
+
+@router.message(SellStates.waiting_for_percentage)
+async def handle_custom_percentage(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Handle custom percentage input"""
+    try:
+        sell_percentage = float(message.text.replace("%", ""))
+        if sell_percentage < 1 or sell_percentage > 100:
+            raise ValueError("Invalid percentage value")
+        await state.update_data(sell_percentage=sell_percentage)
+
+        # Отправляем новое сообщение об успешном изменении
+        status_message = await message.answer(f"✅ Процент установлен: {sell_percentage}%")
+
+        # Показываем обновленное меню продажи
+        await show_sell_menu(status_message, state, session)
+
+    except ValueError:
+        await message.reply(
+            "❌ Неверное значение. Введите число от 1 до 100:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_sell")]
+            ])
+        )
+
+
+def get_sell_keyboard_list(
+        slippage: float,
+        last_buy_amount: float,
+        sell_percentage: float
+):
+    first_row = [[
+        InlineKeyboardButton(text="🔴 Продать", callback_data="market_sell"),
+        InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_sell")
+    ]]
+    last_row = [
+        [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="sell_set_slippage")],
+        [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+    ]
+
+    values = [
+        25,
+        50,
+        75,
+        100,
+    ]
+    buttons = [[f"Initial({last_buy_amount})"]] if last_buy_amount else []
+    row = []
+    chosen = False
+    for i in range(len(values)):
+        val = values[i]
+        if i % 3 == 0:
+            buttons.append(row)
+            row = []
+        if sell_percentage == val:
+            chosen = True
+        row.append(
+            InlineKeyboardButton(
+                text=f"✓ {val}%" if sell_percentage == val else f"{val}%",
+                callback_data=f"sell_{val}"
+            )
+        )
+    if row:
+        buttons.append(row)
+
+    buttons[-1].append(InlineKeyboardButton(text=f"{'' if chosen else '✓' } Custom", callback_data="sell_custom"))
+
+    return InlineKeyboardMarkup(inline_keyboard=first_row + buttons + last_row)

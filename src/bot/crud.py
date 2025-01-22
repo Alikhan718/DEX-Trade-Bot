@@ -54,9 +54,12 @@ async def get_user_settings(user_id: int, session: AsyncSession):
     """
     Retrieves all settings for a given user.
     """
-    stmt = select(UserSettings)\
-        .where(UserSettings.user_id == user_id)\
-        .options(joinedload(UserSettings.setting))
+    stmt = select(UserSettings, Setting)\
+        .join(UserSettings.setting)\
+        .join(UserSettings.user)\
+        .where(
+            User.telegram_id == user_id,
+        )
     result = await session.execute(stmt)
     user_settings = result.scalars().all()
 
@@ -73,10 +76,16 @@ async def get_user_setting(user_id: int, setting_slug: str, session: AsyncSessio
     Retrieves a specific setting for a given user by setting slug.
     """
     stmt = (
-        select(UserSettings)
-        .join(Setting, UserSettings.setting_id == Setting.id)
-        .where(UserSettings.user_id == user_id, Setting.slug == setting_slug)
+        select(UserSettings.value)
+        .join(UserSettings.setting)
+        .join(UserSettings.user)
+        .where(
+            User.telegram_id == user_id,
+            Setting.slug == setting_slug,
+        )
     )
+    print("STATEMENT", stmt)
+    print("SLUG", setting_slug)
     result = await session.execute(stmt)
     user_setting = result.scalar_one_or_none()
 
@@ -85,7 +94,7 @@ async def get_user_setting(user_id: int, setting_slug: str, session: AsyncSessio
         raise Exception(f"Setting '{setting_slug}' not found for user {user_id}")
 
     logger.info(f"Retrieved setting '{setting_slug}' for user {user_id}")
-    return user_setting.value
+    return user_setting
 
 
 async def update_user_setting(user_id: int, setting_slug: str, new_value, session: AsyncSession):
@@ -94,8 +103,12 @@ async def update_user_setting(user_id: int, setting_slug: str, new_value, sessio
     """
     stmt = (
         select(UserSettings)
-        .join(Setting, UserSettings.setting_id == Setting.id)
-        .where(UserSettings.user_id == user_id, Setting.slug == setting_slug)
+        .join(UserSettings.setting)
+        .join(UserSettings.user)
+        .where(
+            User.telegram_id == user_id,
+            Setting.slug == setting_slug,
+        )
     )
     result = await session.execute(stmt)
     user_setting = result.scalar_one_or_none()

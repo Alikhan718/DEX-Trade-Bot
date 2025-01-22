@@ -9,7 +9,7 @@ class BuyStates(StatesGroup):
 
 class SellStates(StatesGroup):
     waiting_for_token = State()
-    waiting_for_amount = State()
+    waiting_for_percentage = State()
     waiting_for_slippage = State()
 
 

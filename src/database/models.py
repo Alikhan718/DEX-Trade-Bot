@@ -53,6 +53,7 @@ class User(Base):
     total_volume = Column(Float, default=0.0)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     last_activity = Column(DateTime(timezone=True), default=datetime.utcnow)
+    last_buy_amount = Column(Float, nullable=True)
     referral_id = Column(Integer, ForeignKey('users.id'), index=True, nullable=True)
 
     referred_users = relationship("User", back_populates="referrer", cascade="all, delete-orphan", lazy='joined')
