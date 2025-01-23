@@ -71,6 +71,31 @@ async def get_user_settings(user_id: int, session: AsyncSession):
     return settings_dict
 
 
+async def get_user_setting(user_id: int, setting_slug: str, session: AsyncSession):
+    """
+    Retrieves a specific setting for a given user by setting slug.
+    """
+    stmt = (
+        select(UserSettings.value)
+        .join(UserSettings.setting)
+        .join(UserSettings.user)
+        .where(
+            User.telegram_id == user_id,
+            Setting.slug == setting_slug,
+        )
+    )
+    print("STATEMENT", stmt)
+    print("SLUG", setting_slug)
+    result = await session.execute(stmt)
+    user_setting = result.scalar_one_or_none()
+
+    if not user_setting:
+        logger.error(f"Setting '{setting_slug}' not found for user {user_id}")
+        raise Exception(f"Setting '{setting_slug}' not found for user {user_id}")
+
+    logger.info(f"Retrieved setting '{setting_slug}' for user {user_id}")
+    return user_setting
+
 
 async def update_user_setting(user_id: int, setting_slug: str, new_value, session: AsyncSession):
     """
