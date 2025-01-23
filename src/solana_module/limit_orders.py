@@ -131,7 +131,7 @@ async def main():
 
     # Добавляем пользователей с лимитными действиями
     limit_orders.add_user("User1", example_action_factory(8, "buy"))
-    limit_orders.add_user("User2", example_action_factory(0.5, "sell"))
+    limit_orders.add_user("User2", example_action_factory(7, "sell"))
 
     # Запускаем мониторинг цен в отдельной задаче
     monitor_task = asyncio.create_task(limit_orders.monitor_prices(interval=20))

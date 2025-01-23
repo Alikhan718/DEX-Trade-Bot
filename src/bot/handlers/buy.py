@@ -12,7 +12,7 @@ from src.services.token_info import TokenInfoService
 from src.database.models import User
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
-from src.bot.states import BuyStates, AutoBuySettingsStates
+from src.bot.states import BuyStates, AutoBuySettingsStates, LimitBuyStates
 from solders.pubkey import Pubkey
 from src.solana_module.utils import get_bonding_curve_address
 from ..crud import get_user_setting, update_user_setting
@@ -532,6 +532,291 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
     except Exception as e:
         logger.error(f"Error handling preset amount: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.callback_query(lambda c: c.data == "limit_buy", flags={"priority": 3})
+async def on_limit_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
+    """
+    При нажатии "Лимитный" - показываем меню лимитного ордера.
+    """
+    try:
+        # Очищаем/обнуляем данные лимитной покупки (опционально)
+        await state.update_data({
+            "trigger_price": 0.0,
+            "limit_amount_sol": 0.0,
+            "limit_slippage": 1.0,
+            "gas_fee": 50000,
+            "menu_type": 'buy',
+            "action_type": 'buy'
+        })
+        # Переходим в "idle" состояние лимитной покупки (либо можно не ставить)
+        await state.set_state(LimitBuyStates.idle)
+
+        await show_limit_buy_menu(callback_query.message, state, edit=True)
+        await callback_query.answer()
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_button: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
+async def show_limit_buy_menu(
+    message: types.Message,
+    state: FSMContext,
+    edit: bool = False
+):
+    """
+    Отображает меню лимитной покупки (порог цены, сумма SOL, slippage, подтверждение).
+    Параметр edit=True означает, что мы редактируем существующее сообщение,
+    иначе отправляем новое.
+    """
+    data = await state.get_data()
+    trigger_price = data.get("trigger_price", 0.0)
+    limit_amount_sol = data.get("limit_amount_sol", 0.0)
+    limit_slippage = data.get("limit_slippage", 1.0)
+
+    # Формируем клавиатуру
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=f"⚙️ Порог цены: {trigger_price or 0} USD",
+                callback_data="limit_buy_set_trigger_price"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"💰 Сумма: {limit_amount_sol or 0} SOL",
+                callback_data="limit_buy_set_amount_sol"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"🛠 Slippage: {limit_slippage}%",
+                callback_data="limit_buy_set_slippage"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="✅ Установить ордер",
+                callback_data="limit_buy_confirm"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")
+        ]
+    ])
+
+    text = (
+        "📊 *Настройки лимитного ордера*\n\n"
+        f"• Порог цены (USD): `{trigger_price}`\n"
+        f"• Сумма (SOL): `{limit_amount_sol}`\n"
+        f"• Slippage: `{limit_slippage}%`\n\n"
+        "Когда цена токена *достигнет* (или *опустится* ниже) указанного порога,\n"
+        "бот автоматически совершит покупку на указанную сумму."
+    )
+
+    if edit:
+        await message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    else:
+        await message.answer(
+            text,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+
+
+@router.callback_query(lambda c: c.data == "limit_buy_set_trigger_price", flags={"priority": 3})
+async def on_limit_buy_set_trigger_price(callback_query: types.CallbackQuery, state: FSMContext):
+    """
+    Переходим к вводу пороговой цены (USD).
+    """
+    try:
+        await callback_query.message.edit_text(
+            "✏️ Введите лимитную цену в USD, при достижении которой нужно купить.\n\n"
+            "Например: `0.00075`",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="limit_buy_back_to_menu")]
+            ])
+        )
+        await state.set_state(LimitBuyStates.set_trigger_price)
+        await callback_query.answer()
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_set_trigger_price: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.message(LimitBuyStates.set_trigger_price)
+async def on_limit_buy_trigger_price_input(message: types.Message, state: FSMContext):
+    """
+    Обрабатываем введённую пользователем лимитную цену (USD).
+    """
+    try:
+        text = message.text.strip().replace(",", ".")
+        price = float(text)
+        if price <= 0:
+            raise ValueError("Price must be > 0")
+
+        # Сохраняем в FSM
+        await state.update_data(trigger_price=price)
+
+        # Возвращаемся в меню лимитного ордера
+        await show_limit_buy_menu(message, state, edit=False)
+        # Сбрасываем состояние обратно в idle (или убираем вообще)
+        await state.set_state(LimitBuyStates.idle)
+
+    except ValueError:
+        await message.reply("❌ Некорректное значение цены. Введите число больше 0.")
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_trigger_price_input: {e}")
+        await message.reply("❌ Произошла ошибка при обработке цены.")
+        await state.clear()
+
+
+@router.callback_query(lambda c: c.data == "limit_buy_set_amount_sol", flags={"priority": 3})
+async def on_limit_buy_set_amount_sol(callback_query: types.CallbackQuery, state: FSMContext):
+    """
+    Переходим к вводу суммы в SOL для лимитного ордера.
+    """
+    try:
+        await callback_query.message.edit_text(
+            "✏️ Введите, сколько SOL хотите потратить.\n\n"
+            "Например: `0.1`",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="limit_buy_back_to_menu")]
+            ])
+        )
+        await state.set_state(LimitBuyStates.set_amount_sol)
+        await callback_query.answer()
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_set_amount_sol: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.message(LimitBuyStates.set_amount_sol)
+async def on_limit_buy_amount_sol_input(message: types.Message, state: FSMContext):
+    """
+    Обрабатываем введённую сумму SOL.
+    """
+    try:
+        text = message.text.strip().replace(",", ".")
+        amount = float(text)
+        if amount <= 0:
+            raise ValueError("Amount must be > 0")
+
+        # Сохраняем в FSM
+        await state.update_data(limit_amount_sol=amount)
+
+        # Возвращаемся в меню
+        await show_limit_buy_menu(message, state, edit=False)
+        await state.set_state(LimitBuyStates.idle)
+
+    except ValueError:
+        await message.reply("❌ Некорректное значение суммы. Введите число > 0.")
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_amount_sol_input: {e}")
+        await message.reply("❌ Произошла ошибка")
+        await state.clear()
+
+
+@router.callback_query(lambda c: c.data == "limit_buy_set_slippage", flags={"priority": 3})
+async def on_limit_buy_set_slippage(callback_query: types.CallbackQuery, state: FSMContext):
+    """
+    Аналогично: просим пользователя ввести slippage (0-100).
+    """
+    try:
+        await callback_query.message.edit_text(
+            "✏️ Введите slippage (в процентах), например `1.5`.\n"
+            "Диапазон рекомендуемый: 0.1 - 5%",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="limit_buy_back_to_menu")]
+            ])
+        )
+        await state.set_state(LimitBuyStates.set_slippage)
+        await callback_query.answer()
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_set_slippage: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.message(LimitBuyStates.set_slippage)
+async def on_limit_buy_slippage_input(message: types.Message, state: FSMContext):
+    """
+    Сохраняем slippage в FSM.
+    """
+    try:
+        text = message.text.strip().replace(",", ".")
+        slippage = float(text)
+        if slippage <= 0 or slippage > 100:
+            raise ValueError("Slippage out of range")
+
+        await state.update_data(limit_slippage=slippage)
+
+        await show_limit_buy_menu(message, state, edit=False)
+        await state.set_state(LimitBuyStates.idle)
+
+    except ValueError:
+        await message.reply("❌ Некорректное значение slippage. Введите число от 0 до 100.")
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_slippage_input: {e}")
+        await message.reply("❌ Произошла ошибка")
+        await state.clear()
+    
+
+@router.callback_query(lambda c: c.data == "limit_buy_confirm", flags={"priority": 3})
+async def on_limit_buy_confirm(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """
+    Пользователь подтверждает установку лимитного ордера.
+    Сохраняем в БД / user_setting и информируем его.
+    """
+    try:
+        user_id = get_real_user_id(callback_query)
+
+        # Получаем данные из FSM
+        data = await state.get_data()
+        trigger_price = data.get("trigger_price")
+        limit_amount_sol = data.get("limit_amount_sol")
+        limit_slippage = data.get("limit_slippage")
+        token_address = data.get("token_address")  # Если у вас уже где-то хранится
+
+        # Если чего-то нет - выходим
+        if not trigger_price or not limit_amount_sol:
+            await callback_query.answer("❌ Не указаны все параметры ордера")
+            return
+
+        # Сохраняем «лимитный ордер» в БД или в user_setting
+        # Пример через update_user_setting:
+        limit_buy_settings = {
+            "token_address": token_address,
+            "trigger_price_usd": trigger_price,
+            "amount_sol": limit_amount_sol,
+            "gas_fee": 50000,
+            "slippage": limit_slippage,
+            "enabled": True,
+        }
+        await update_user_setting(user_id, "limit_buy", limit_buy_settings, session)
+
+        await callback_query.message.edit_text(
+            f"✅ Лимитный ордер создан.\n\n"
+            f"• Цена (USD): {trigger_price}\n"
+            f"• Сумма (SOL): {limit_amount_sol}\n"
+            f"• Slippage: {limit_slippage}%",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+            ])
+        )
+
+        await state.clear()
+        await callback_query.answer()
+
+    except Exception as e:
+        logger.error(f"Error on_limit_buy_confirm: {e}")
+        await callback_query.answer("❌ Ошибка при сохранении ордера")
+        await state.clear()
+
+
 
 
 @router.callback_query(F.data == "auto_buy_settings", flags={"priority": 3})
