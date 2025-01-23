@@ -22,7 +22,7 @@ def token_info(mint):
     try:
         # Выполнение GET-запроса
         response = requests.get(url, params=params, headers=headers)
-        
+
         # Проверка успешности запроса
         if response.status_code == 200:
             # Вывод данных в формате JSON
