@@ -151,7 +151,6 @@ class SolanaAnalyzer:
             for account in largest_accounts:
                 info = await self.account_info(account.address, target_mint, days_ago=days_ago)
                 ti = float(token_info(target_mint)['priceUsd'])
-                print(ti)
                 if info:
                     balance, tx_count, avg_roi = info
                     print(f"Account: {account.address}, Balance: {float(account.amount.ui_amount) * ti} $, Transactions: {tx_count}, Avg ROI: {avg_roi:.2f}%")
@@ -169,4 +168,4 @@ async def account_info():
 # Run the async analyzer
 if __name__ == "__main__":
     analyzer = SolanaAnalyzer(RPC_URL)
-    asyncio.run(analyzer.analyze_accounts(Pubkey.from_string(TARGET_MINT), days_ago=7))
+    asyncio.run(analyzer.analyze_accounts(Pubkey.from_string(TARGET_MINT), days_ago=30))
