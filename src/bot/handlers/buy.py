@@ -772,17 +772,9 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
                           solana_service: SolanaService):
     """Автоматическая покупка при получении mint адреса"""
     try:
-        # Получаем настройки автобая
-        # settings = await session.scalar(
-        #     select(AutoBuySettings)
-        #     .join(User)
-        #     .where(User.telegram_id == message.from_user.id)
-        # ) todo fix
-
+        user_id = get_real_user_id(message)
+        auto_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
         # Если автобай выключен или настройки не найдены, пропускаем
-        return
-        if not settings or not settings.enabled:
-            return
 
         # Проверяем текущее состояние пользователя
         current_state = await state.get_state()
@@ -810,10 +802,10 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
 
         # Проверяем достаточно ли средств
-        if balance < settings.amount_sol:
+        if balance < auto_buy_settings['amount_sol']:
             await message.reply(
                 f"❌ Недостаточно средств для автопокупки\n"
-                f"Необходимо: {settings.amount_sol} SOL\n"
+                f"Необходимо: {auto_buy_settings['amount_sol']} SOL\n"
                 f"Доступно: {balance:.4f} SOL",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
@@ -832,7 +824,9 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
 
         # Инициализируем обработчик транзакций
         try:
-            tx_handler = UserTransactionHandler(user.private_key)
+            user_id = get_real_user_id(message)
+            settings = await get_user_setting(user_id, 'buy', session)
+            tx_handler = UserTransactionHandler(user.private_key, settings['gas_fee'])
         except ValueError as e:
             logger.error(f"Failed to initialize transaction handler: {e}")
             await status_message.edit_text(
@@ -844,8 +838,8 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             return
 
         # Выполняем покупку с предустановленными параметрами
-        amount_sol = settings.amount_sol
-        slippage = settings.slippage
+        amount_sol = auto_buy_settings['amount_sol']
+        slippage = auto_buy_settings['slippage']
 
         # Получаем информацию о токене перед покупкой
         token_info = await token_info_service.get_token_info(token_address)
