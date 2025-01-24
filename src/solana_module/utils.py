@@ -2,7 +2,7 @@
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
 
-from solana_client import BondingCurveState, EXPECTED_DISCRIMINATOR, LAMPORTS_PER_SOL, TOKEN_DECIMALS
+from .solana_client import BondingCurveState, EXPECTED_DISCRIMINATOR, LAMPORTS_PER_SOL, TOKEN_DECIMALS
 
 
 def get_bonding_curve_address(mint: Pubkey, program_id: Pubkey) -> tuple[Pubkey, int]:
