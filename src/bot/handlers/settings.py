@@ -20,12 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 @router.callback_query(F.data == "settings_menu", flags={"priority": 3})
-async def show_settings_menu(message: types.Message, session: AsyncSession):
+async def show_settings_menu(callback_query: types.CallbackQuery, session: AsyncSession):
     """Отображение главного меню настроек с данными из базы"""
     try:
-        message = message.message if 'message' in message else message
+        # Получаем объект Message из CallbackQuery
+        message = callback_query.message
 
-        user_id = get_real_user_id(message)
+        user_id = get_real_user_id(callback_query)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
@@ -44,7 +45,7 @@ async def show_settings_menu(message: types.Message, session: AsyncSession):
         if not settings_dict:
             await create_initial_user_settings(user_id, session)
             settings_dict = await get_user_settings(user_id, session)
-        print(settings_dict)
+
         # Формируем текст меню
         menu_text = (
             "⚙️ Настройки\n\n"
@@ -53,10 +54,14 @@ async def show_settings_menu(message: types.Message, session: AsyncSession):
         buy_settings_keyboard = []
         if 'buy' in settings_dict:
             buy_settings_keyboard = [
-                InlineKeyboardButton(text=f"🚀 Покупка: Gas fee ({settings_dict['buy']['gas_fee']})",
-                                     callback_data="edit_buy_gasfee"),
-                InlineKeyboardButton(text=f"⚙️ Покупка: Slippage ({settings_dict['buy']['slippage']}%)",
-                                     callback_data="edit_buy_slippage")
+                InlineKeyboardButton(
+                    text=f"🚀 Покупка: Gas fee ({settings_dict['buy']['gas_fee']})",
+                    callback_data="edit_buy_gasfee"
+                ),
+                InlineKeyboardButton(
+                    text=f"⚙️ Покупка: Slippage ({settings_dict['buy']['slippage']}%)",
+                    callback_data="edit_buy_slippage"
+                )
             ]
 
         sell_settings_keyboard = []
@@ -80,15 +85,24 @@ async def show_settings_menu(message: types.Message, session: AsyncSession):
             buttonRows.append(row)
 
         # Определение состояния Anti MEV
-        anti_mev_text = '🟢 Anti MEV' if settings_dict['anti_mev'] else '🔴 Anti MEV'  # Заменить на условие
+        anti_mev_text = '🟢 Anti MEV' if settings_dict['anti_mev'] else '🔴 Anti MEV'
         anti_mev_button = InlineKeyboardButton(text=anti_mev_text, callback_data="edit_antimev")
 
         # Формирование клавиатуры
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttonRows +  # Добавляем кнопки покупки и продажи
-                                                        [[anti_mev_button],  # Кнопка Anti MEV
-                                                         [InlineKeyboardButton(text="⬅️ Назад",
-                                                                               callback_data="main_menu")]])
-        # Отправляем сообщение с меню
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=
+            buttonRows +  # Добавляем кнопки покупки и продажи
+            [
+                [anti_mev_button],  # Кнопка Anti MEV
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Назад",
+                        callback_data="main_menu"
+                    )
+                ]
+            ]
+        )
+        # Редактируем сообщение с меню
         await message.edit_text(
             menu_text,
             reply_markup=keyboard,
@@ -100,7 +114,7 @@ async def show_settings_menu(message: types.Message, session: AsyncSession):
         logger.error(f"Error showing settings menu: {e}")
         traceback.print_exc()
 
-        await message.edit_text(
+        await callback_query.message.edit_text(
             "❌ Произошла ошибка при загрузке меню кошелька",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
