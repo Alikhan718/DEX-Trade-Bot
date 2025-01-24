@@ -13,7 +13,7 @@ from src.services.solana_service import SolanaService
 from src.services.smart_money import SmartMoneyTracker
 from src.services.rugcheck import RugCheckService
 from .middleware import DatabaseMiddleware, ServicesMiddleware
-from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell
+from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell, settings
 from .services.copy_trade_service import CopyTradeService
 
 logger = setup_logging()
@@ -88,6 +88,7 @@ class SolanaDEXBot:
         self.dp.include_router(rugcheck.router)
         self.dp.include_router(copy_trade.router)
         self.dp.include_router(buy.router)
+        self.dp.include_router(settings.router)
 
         logger.info("Handlers registered successfully")
 

@@ -47,7 +47,7 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     ],
     # Settings and help
     [
-        InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+        InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings_menu"),
         InlineKeyboardButton(text="❓ Помощь", callback_data="help")
     ],
     # Referral

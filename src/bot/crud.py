@@ -54,14 +54,15 @@ async def get_user_settings(user_id: int, session: AsyncSession):
     """
     Retrieves all settings for a given user.
     """
-    stmt = select(UserSettings, Setting)\
-        .join(UserSettings.setting)\
-        .join(UserSettings.user)\
-        .where(
-            User.telegram_id == user_id,
-        )
+    stmt = (
+        select(UserSettings)
+        .join(UserSettings.setting)
+        .join(UserSettings.user)
+        .where(User.telegram_id == user_id)
+        .options(joinedload(UserSettings.setting), joinedload(UserSettings.user))
+    )
     result = await session.execute(stmt)
-    user_settings = result.scalars().all()
+    user_settings = result.unique().scalars().all()
 
     settings_dict = {
         user_setting.setting.slug: user_setting.value for user_setting in user_settings
@@ -89,7 +90,7 @@ async def get_user_setting(user_id: int, setting_slug: str, session: AsyncSessio
     result = await session.execute(stmt)
     user_setting = result.scalar_one_or_none()
 
-    if not user_setting:
+    if user_setting is None or user_setting == '':
         logger.error(f"Setting '{setting_slug}' not found for user {user_id}")
         raise Exception(f"Setting '{setting_slug}' not found for user {user_id}")
 

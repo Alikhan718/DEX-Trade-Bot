@@ -356,7 +356,7 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
                 "⚙️ Пользовательский Slippage для продажи\n\n"
                 "Введите значение в процентах (например, 1.5):",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage")]
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_sell")]
                 ])
             )
             await state.set_state(SellStates.waiting_for_slippage)
@@ -383,9 +383,6 @@ async def handle_back_to_sell(callback_query: types.CallbackQuery, state: FSMCon
     logger.info("[SELL] Handling back_to_sell")
     data = await state.get_data()
     logger.info(f"[SELL] Current state data: {data}")
-    if data.get("menu_type") != "sell":
-        logger.warning(f"[SELL] Wrong menu type: {data.get('menu_type')}")
-        return
     await show_sell_menu(callback_query.message, state, session)
     logger.info("[SELL] Showed sell menu")
 

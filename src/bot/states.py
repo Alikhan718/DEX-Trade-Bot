@@ -43,3 +43,13 @@ class CopyTradeStates(StatesGroup):
 class AutoBuySettingsStates(StatesGroup):
     ENTER_AMOUNT = State()
     ENTER_SLIPPAGE = State()
+
+
+class BuySettingStates(StatesGroup):
+    waiting_for_gas_fee = State()
+    waiting_for_slippage = State()
+
+
+class SellSettingStates(StatesGroup):
+    waiting_for_gas_fee = State()
+    waiting_for_slippage = State()
