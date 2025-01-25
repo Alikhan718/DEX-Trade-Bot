@@ -144,7 +144,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             # Тип ордера
             [
                 InlineKeyboardButton(text="🟢 Купить", callback_data="market_buy"),
-                InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_buy")
+                InlineKeyboardButton(text="⚪️ Лимитный", callback_data="limit_buy")
             ],
             # Предустановленные суммы
             [
@@ -521,7 +521,8 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
             if trigger_price_percent:
                 # Рассчитываем цену в долларах
                 trigger_price_usd = token_info.price_usd * (1 + (trigger_price_percent / 100))
-                trigger_price_text += f" (${trigger_price_usd:.6f})"
+                trigger_price_usd = format(trigger_price_usd, '.6f')
+                trigger_price_text += f" (${_format_price(trigger_price_usd)})"
             keyboard.append([InlineKeyboardButton(text=trigger_price_text, callback_data="set_trigger_price")])
 
         # Кнопка подтверждения
@@ -536,7 +537,8 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
 
         if is_limit_order:
-            addiction = (f"⚙️ Slippage: {slippage}%\n" if slippage else "") + (f"💵 Trigger Price: {trigger_price_percent}% (${token_info.price_usd * (1 + (trigger_price_percent / 100)):.6f})\n" if trigger_price_percent else "")
+            trigger_price_usd = format(token_info.price_usd * (1 + (trigger_price_percent / 100)), '.6f')
+            addiction = (f"⚙️ Slippage: {slippage}%\n" if slippage else "") + (f"💵 Trigger Price: {trigger_price_percent}% (${_format_price(trigger_price_usd)})\n" if trigger_price_percent else "")
         else:
             addiction = ""
 
@@ -618,10 +620,13 @@ async def handle_trigger_price_input(message: types.Message, state: FSMContext, 
         await state.update_data(trigger_price_percent=trigger_price)
         
         # Отправляем сообщение об успешной установке
-        status_message = await message.reply(f"✅ Trigger Price установлен: {trigger_price}%")
+        status_message = await message.reply(f"✅ Триггерная цена установлена: {trigger_price}%")
+        
+        # Получаем ID пользователя
+        user_id = message.from_user.id
         
         # Показываем обновленное меню покупки
-        await show_buy_menu(status_message, state, session)
+        await show_buy_menu(status_message, state, session, user_id)
 
     except Exception as e:
         logger.error(f"Error handling trigger price input: {e}")
