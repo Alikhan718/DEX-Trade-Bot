@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.bot.crud import get_user_settings, update_user_setting, get_user_setting, create_initial_user_settings
 import logging
 
+from src.bot.handlers.buy import _format_price
 from src.bot.states import BuySettingStates, SellSettingStates
 from src.bot.utils import get_real_user_id
 from src.database import User
@@ -66,9 +67,10 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
         )
         buy_settings_keyboard = []
         if 'buy' in settings_dict:
+            gas_fee = settings_dict['buy']['gas_fee'] / 1e9
             buy_settings_keyboard = [
                 InlineKeyboardButton(
-                    text=f"🚀 Покупка: Gas fee ({settings_dict['buy']['gas_fee']})",
+                    text=f"🚀 Покупка: Gas fee ({_format_price(gas_fee)} SOL)",
                     callback_data="edit_buy_gasfee"
                 ),
                 InlineKeyboardButton(
@@ -79,8 +81,9 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
 
         sell_settings_keyboard = []
         if 'sell' in settings_dict:
+            gas_fee = settings_dict['sell']['gas_fee'] / 1e9
             sell_settings_keyboard = [
-                InlineKeyboardButton(text=f"🚀 Продажа: Gas fee ({settings_dict['sell']['gas_fee']})",
+                InlineKeyboardButton(text=f"🚀 Продажа: Gas fee ({_format_price(gas_fee)} SOL)",
                                      callback_data="edit_sell_gasfee"),
                 InlineKeyboardButton(text=f"⚙️ Продажа: Slippage ({settings_dict['sell']['slippage']}%)",
                                      callback_data="edit_sell_slippage")
@@ -216,14 +219,16 @@ async def handle_custom_settings_edit_base(
             "type": float,
             "name": "Gas Fee",
             "unit": "",
-            "min": 1000.0,
-            "max": 10000000.0
+            "multiplier": 1e9,
+            "min": 0,
+            "max": 10
 
         },
         "slippage": {
             "type": float,
             "name": "Slippage",
             "unit": "%",
+            "multiplier": 1,
             "min": 1.0,
             "max": 100.0
         }
@@ -246,6 +251,7 @@ async def handle_custom_settings_edit_base(
         attribute_type = attribute_info.get('type')
         attribute_name = attribute_info.get('name')
         attribute_unit = attribute_info.get('unit')
+        attribute_multiplier = attribute_info.get('multiplier')
         # Проверяем, что введено число
         try:
             value = attribute_type(value)
@@ -257,7 +263,7 @@ async def handle_custom_settings_edit_base(
             await state.set_state(retry_action)
             return
 
-        setting[attribute] = value
+        setting[attribute] = value * attribute_multiplier
 
         # Сохраняем обновленные настройки
         await update_user_setting(user_id, setting_type, setting, session)
@@ -293,7 +299,7 @@ async def handle_buy_gas_fee(message: types.Message, state: FSMContext, session:
 
 
 @router.message(BuySettingStates.waiting_for_slippage, flags={"priority": 5})
-async def handle_buy_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+async def handle_buy_slippage(message: types.Message, state: FSMContext, session: AsyncSession):
     """Обработчик для установки значения Gas Fee"""
     return await handle_custom_settings_edit_base(
         setting_type="buy",
@@ -319,7 +325,7 @@ async def handle_sell_gas_fee(message: types.Message, state: FSMContext, session
 
 
 @router.message(SellSettingStates.waiting_for_slippage, flags={"priority": 5})
-async def handle_sell_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+async def handle_sell_slippage(message: types.Message, state: FSMContext, session: AsyncSession):
     """Обработчик для установки значения Gas Fee"""
     return await handle_custom_settings_edit_base(
         setting_type="sell",
