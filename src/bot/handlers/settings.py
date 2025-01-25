@@ -206,50 +206,126 @@ async def edit_setting(callback_query: types.CallbackQuery, state: FSMContext, s
         await callback_query.answer("❌ Произошла ошибка при редактировании настройки")
 
 
-@router.message(BuySettingStates.waiting_for_gas_fee, flags={"priority": 5})
-async def handle_buy_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
-    """Обработчик для установки значения Gas Fee"""
-    try:
-        # Получаем значение из сообщения
-        amount = message.text.strip()
-        
-        # Проверяем, что введено число
-        try:
-            amount = float(amount)
-        except ValueError:
-            await message.reply("❌ Пожалуйста, введите числовое значение для Gas Fee")
-            return
+async def handle_custom_settings_edit_base(
+        setting_type, attribute,
+        message: types.Message, session: AsyncSession,
+        state: FSMContext, retry_action
+):
+    attribute_name_dict = {
+        "gas_fee": {
+            "type": float,
+            "name": "Gas Fee",
+            "unit": "",
+            "min": 1000.0,
+            "max": 10000000.0
 
+        },
+        "slippage": {
+            "type": float,
+            "name": "Slippage",
+            "unit": "%",
+            "min": 1.0,
+            "max": 100.0
+        }
+    }
+    attribute_name = attribute
+    try:
         # Получаем пользователя и его настройки
         user_id = message.from_user.id
-        
+
         # Получаем текущие настройки
-        settings_dict = await get_user_settings(user_id, session)
-        if not settings_dict:
+        setting = await get_user_setting(user_id, setting_type, session)
+        if not setting \
+                or attribute not in setting \
+                or attribute not in attribute_name_dict:
             await message.reply("❌ Настройки не найдены")
             return
+        attribute_info = attribute_name_dict.get(attribute)
+        # Получаем значение из сообщения
+        value = message.text.strip()
+        attribute_type = attribute_info.get('type')
+        attribute_name = attribute_info.get('name')
+        attribute_unit = attribute_info.get('unit')
+        # Проверяем, что введено число
+        try:
+            value = attribute_type(value)
+            if value > attribute_info.get('max') or value < attribute_info.get('min'):
+                raise ValueError
+        except ValueError:
+            await message.reply(f"❌ Пожалуйста, введите числовое значение для {attribute_name} " + (
+                f"({attribute_info.get('min')} - {attribute_info.get('max')})"))
+            await state.set_state(retry_action)
+            return
 
-        # Обновляем значение Gas Fee
-        if 'buy' not in settings_dict:
-            settings_dict['buy'] = {}
-        settings_dict['buy']['gas_fee'] = amount
-        
+        setting[attribute] = value
+
         # Сохраняем обновленные настройки
-        await update_user_setting(user_id, 'buy', settings_dict['buy'], session)
-        await state.clear()
+        await update_user_setting(user_id, setting_type, setting, session)
 
         # Отправляем подтверждение
-        await message.reply(f"✅ Gas Fee установлено: {amount}")
-        
+        await message.reply(f"✅ {attribute_name} установлено: {value}{attribute_unit}")
+
         # Показываем обновленное меню настроек
         await show_settings_menu(message, session)
 
     except Exception as e:
-        logger.error(f"Error handling buy gas fee: {e}")
+        logger.error(f"Error handling {setting_type} {attribute}: {e}")
         traceback.print_exc()
         await message.reply(
-            "❌ Произошла ошибка при установке Gas Fee",
+            f"❌ Произошла ошибка при установке {attribute_name}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_menu")]
             ])
         )
+
+
+@router.message(BuySettingStates.waiting_for_gas_fee, flags={"priority": 5})
+async def handle_buy_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_custom_settings_edit_base(
+        setting_type="buy",
+        attribute="gas_fee",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=BuySettingStates.waiting_for_gas_fee
+    )
+
+
+@router.message(BuySettingStates.waiting_for_slippage, flags={"priority": 5})
+async def handle_buy_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_custom_settings_edit_base(
+        setting_type="buy",
+        attribute="slippage",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=BuySettingStates.waiting_for_slippage
+    )
+
+
+@router.message(SellSettingStates.waiting_for_gas_fee, flags={"priority": 5})
+async def handle_sell_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_custom_settings_edit_base(
+        setting_type="sell",
+        attribute="gas_fee",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=SellSettingStates.waiting_for_gas_fee
+    )
+
+
+@router.message(SellSettingStates.waiting_for_slippage, flags={"priority": 5})
+async def handle_sell_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_custom_settings_edit_base(
+        setting_type="sell",
+        attribute="slippage",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=SellSettingStates.waiting_for_slippage
+    )
