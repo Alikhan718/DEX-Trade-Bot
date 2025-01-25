@@ -637,7 +637,7 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
     """Handle preset amount buttons"""
     try:
         # Extract amount from callback data
-        amount = callback_query.data.split("")[1]
+        amount = callback_query.data.split('_')[1]
         if amount == "custom":
             await callback_query.message.edit_text(
                 "⚙️ Количество для покупки\n\n"
