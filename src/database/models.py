@@ -256,3 +256,22 @@ class UserSettings(Base):
 
     user = relationship("User", back_populates="user_settings")
     setting = relationship("Setting", back_populates="user_settings")
+
+
+class LimitOrder(Base):
+    __tablename__ = "limit_orders"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+    token_address = Column(String(44), nullable=False)
+    amount_sol = Column(Float, nullable=False)
+    trigger_price_usd = Column(Float, nullable=False)
+    trigger_price_percent = Column(Float, nullable=False)
+    slippage = Column(Float, default=1.0)
+    status = Column(String(20), default='active', index=True)  # active, executed, cancelled
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    executed_at = Column(DateTime(timezone=True), nullable=True)
+    transaction_hash = Column(String(88), nullable=True)  # Хэш транзакции после исполнения
+
+    # Relationships
+    user = relationship("User", backref="limit_orders")

@@ -5,6 +5,7 @@ class BuyStates(StatesGroup):
     waiting_for_token = State()
     waiting_for_amount = State()
     waiting_for_slippage = State()
+    waiting_for_trigger_price = State()
 
 
 class SellStates(StatesGroup):

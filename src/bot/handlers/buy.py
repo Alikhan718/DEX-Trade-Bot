@@ -413,7 +413,7 @@ async def handle_back_to_buy(callback_query: types.CallbackQuery, state: FSMCont
 
 
 async def show_buy_menu(message: types.Message, state: FSMContext, session: AsyncSession, user_id=None):
-    """Show buy menu with current token info and settings"""
+    """Показать меню покупки"""
     try:
         # Get current data
         user_id = user_id if user_id else message.from_user.id
@@ -423,22 +423,42 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         token_address = data.get("token_address")
         amount_sol = data.get("amount_sol", 0.1)
         slippage = settings["slippage"]
+        is_limit_order = data.get("is_limit_order", False)
+        trigger_price_percent = data.get("trigger_price_percent")
 
-        # Get token info
+        if not token_address:
+            await message.edit_text(
+                "❌ Не указан адрес токена",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+                ])
+            )
+            return
+
+        # Получаем информацию о токене
         token_info = await token_info_service.get_token_info(token_address)
         if not token_info:
             await message.edit_text(
                 "❌ Не удалось получить информацию о токене",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
                 ])
             )
             return
-        token_info = await token_info_service.get_token_info(token_address)
-        if not token_info:
-            await message.reply(
-                "❌ Не удалось получить информацию о токене\n"
-                "Пожалуйста, проверьте адрес и попробуйте снова"
+
+        # Получаем баланс пользователя
+        if not user_id:
+            user_id = get_real_user_id(message)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+
+        if not user:
+            await message.edit_text(
+                "❌ Пользователь не найден",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+                ])
             )
             return
 
@@ -447,13 +467,23 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         sol_price = data.get('sol_price')
         usd_balance = data.get('usd_balance')
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            # Тип ордера
-            [
-                InlineKeyboardButton(text="🟢 Купить", callback_data="market_buy"),
-                InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_buy")
-            ],
-            # Предустановленные суммы
+        # Формируем клавиатуру
+        keyboard = []
+        
+        # Кнопки выбора типа ордера
+        keyboard.append([
+            InlineKeyboardButton(
+                text="🟢 Купить" if not is_limit_order else "⚪️ Купить",
+                callback_data="market_buy"
+            ),
+            InlineKeyboardButton(
+                text="🟢 Лимитный" if is_limit_order else "⚪️ Лимитный",
+                callback_data="limit_buy"
+            )
+        ])
+
+        # Предустановленные суммы
+        keyboard.extend([
             [
                 InlineKeyboardButton(text="0.002 SOL", callback_data="buy_0.002"),
                 InlineKeyboardButton(text="0.005 SOL", callback_data="buy_0.005"),
@@ -463,33 +493,54 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
                 InlineKeyboardButton(text="0.02 SOL", callback_data="buy_0.02"),
                 InlineKeyboardButton(text="0.1 SOL", callback_data="buy_0.1"),
                 InlineKeyboardButton(text="Custom", callback_data="buy_custom")
-            ],
-            # Slippage
-            [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")],
-            # Действия
-            [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ]
         ])
+
+        # Настройки
+        keyboard.append([InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")])
+
+        # Для лимитного ордера добавляем кнопку установки триггерной цены
+        if is_limit_order:
+            trigger_price_text = f"💵 Trigger Price: {trigger_price_percent}%" if trigger_price_percent else "💵 Set Trigger Price"
+            if trigger_price_percent:
+                # Рассчитываем цену в долларах
+                trigger_price_usd = token_info.price_usd * (1 + (trigger_price_percent / 100))
+                trigger_price_text += f" (${trigger_price_usd:.6f})"
+            keyboard.append([InlineKeyboardButton(text=trigger_price_text, callback_data="set_trigger_price")])
+
+        # Кнопка подтверждения
+        keyboard.append([
+            InlineKeyboardButton(
+                text="📝 Создать ордер" if is_limit_order else "💰 Купить",
+                callback_data="confirm_buy"
+            )
+        ])
+
+        # Кнопка назад
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
 
         # Формируем сообщение
         message_text = (
-                f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
-                f"📍 Адрес токена:\n`{token_address}`\n\n"
-                f"💰 Баланс кошелька:\n"
-                f"• SOL Balance: {_format_price(balance)} SOL (${usd_balance:.2f})\n\n"
-                + (f"💰 Выбранная сумма: {_format_price(amount_sol)} SOL\n" if amount_sol else "")
-                + (f"⚙️ Slippage: {slippage}%\n\n" if slippage else "")
-                + f"📊 Информация о токене:\n"
-                + f"• Price: ${_format_price(token_info.price_usd)}\n"
-                + f"• MC: ${_format_price(token_info.market_cap)}\n"
-                + f"• Renounced: {'✔️' if token_info.is_renounced else '✖️'} "
-                + f"Burnt: {'✔️' if token_info.is_burnt else '✖️'}\n\n"
-                + f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
+            f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
+            f"📍 Адрес токена:\n`{token_address}`\n\n"
+            f"💰 Баланс кошелька:\n"
+            f"• SOL Balance: {_format_price(balance)} SOL (${usd_balance:.2f})\n\n"
+            + (f"💰 Выбранная сумма: {_format_price(amount_sol)} SOL\n" if amount_sol else "")
+            + (f"⚙️ Slippage: {slippage}%\n" if slippage else "")
+            + (f"💵 Trigger Price: {trigger_price_percent}% (${token_info.price_usd * (1 + (trigger_price_percent / 100)):.6f})\n" if trigger_price_percent else "")
+            + f"\n📊 Информация о токене:\n"
+            + f"• Price: ${_format_price(token_info.price_usd)}\n"
+            + f"• MC: ${_format_price(token_info.market_cap)}\n"
+            + f"• Renounced: {'✔️' if token_info.is_renounced else '✖️'} "
+            + f"Burnt: {'✔️' if token_info.is_burnt else '✖️'}\n\n"
+            + f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
-        message = message.message if 'message' in message else message
+
+        # Отправляем или редактируем сообщение
+        message = message.message if hasattr(message, 'message') else message
         await message.edit_text(
             message_text,
-            reply_markup=keyboard,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
             parse_mode="MARKDOWN",
             disable_web_page_preview=True
         )
@@ -500,10 +551,65 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         await message.edit_text(
             "❌ Произошла ошибка при отображении меню",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
             ])
         )
 
+
+
+@router.callback_query(lambda c: c.data == "set_trigger_price", flags={"priority": 3})
+async def handle_set_trigger_price(callback_query: types.CallbackQuery, state: FSMContext):
+    """Обработчик для установки триггерной цены"""
+    try:
+        await state.set_state(BuyStates.waiting_for_trigger_price)
+        await callback_query.message.edit_text(
+            "💵 Установка триггерной цены\n\n"
+            "Введите процент изменения цены для срабатывания ордера.\n"
+            "Например:\n"
+            "• 10 - ордер сработает когда цена вырастет на 10%\n"
+            "• -5 - ордер сработает когда цена упадет на 5%",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Error setting trigger price: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.message(BuyStates.waiting_for_trigger_price)
+async def handle_trigger_price_input(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик ввода триггерной цены"""
+    try:
+        # Проверяем введенное значение
+        try:
+            trigger_price = float(message.text.replace(',', '.').strip())
+        except ValueError:
+            await message.reply(
+                "❌ Пожалуйста, введите числовое значение",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
+                ])
+            )
+            return
+
+        # Сохраняем значение в состоянии
+        await state.update_data(trigger_price_percent=trigger_price)
+        
+        # Отправляем сообщение об успешной установке
+        status_message = await message.reply(f"✅ Trigger Price установлен: {trigger_price}%")
+        
+        # Показываем обновленное меню покупки
+        await show_buy_menu(status_message, state, session)
+
+    except Exception as e:
+        logger.error(f"Error handling trigger price input: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при установке триггерной цены",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
+            ])
+        )
 
 @router.message(BuyStates.waiting_for_amount)
 async def handle_custom_amount(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
@@ -526,13 +632,12 @@ async def handle_custom_amount(callback_query: types.CallbackQuery, state: FSMCo
             ])
         )
 
-
-@router.callback_query(lambda c: c.data.startswith("buy_"))
+@router.callback_query(lambda c: c.data.startswith("buy"))
 async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle preset amount buttons"""
     try:
         # Extract amount from callback data
-        amount = callback_query.data.split("_")[1]
+        amount = callback_query.data.split("")[1]
         if amount == "custom":
             await callback_query.message.edit_text(
                 "⚙️ Количество для покупки\n\n"
@@ -554,7 +659,7 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
     except Exception as e:
         logger.error(f"Error handling preset amount: {e}")
         await callback_query.answer("❌ Произошла ошибка")
-
+        
 
 @router.callback_query(F.data == "auto_buy_settings", flags={"priority": 3})
 async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuery], session: AsyncSession):
@@ -912,3 +1017,16 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
         )
+
+
+@router.callback_query(lambda c: c.data == "limit_buy", flags={"priority": 3})
+async def handle_limit_buy(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Обработчик для создания лимитного ордера на покупку"""
+    try:
+        # Устанавливаем флаг лимитного ордера в состоянии
+        await state.update_data(is_limit_order=True)
+        # Показываем обновленное меню покупки
+        await show_buy_menu(callback_query.message, state, session)
+    except Exception as e:
+        logger.error(f"Error handling limit buy: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
