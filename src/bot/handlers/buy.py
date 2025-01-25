@@ -412,19 +412,34 @@ async def handle_back_to_buy(callback_query: types.CallbackQuery, state: FSMCont
     logger.info("[BUY] Showed buy menu")
 
 
+@router.callback_query(lambda c: c.data == "limit_buy", flags={"priority": 3})
+async def handle_limit_buy(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Обработчик для создания лимитного ордера на покупку"""
+    try:
+        # Устанавливаем флаг лимитного ордера в состоянии
+        await state.update_data(is_limit_order=True)
+        # Показываем обновленное меню покупки
+        logger.info("[BUY] Showed buy menu with limit order")
+        await show_buy_menu(callback_query.message, state, session, callback_query.from_user.id)
+    except Exception as e:
+        logger.error(f"Error handling limit buy: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
 async def show_buy_menu(message: types.Message, state: FSMContext, session: AsyncSession, user_id=None):
     """Показать меню покупки"""
     try:
+        
         # Get current data
         user_id = user_id if user_id else message.from_user.id
         settings = await get_user_setting(user_id, 'buy', session)
-        print(settings)
         data = await state.get_data()
         token_address = data.get("token_address")
         amount_sol = data.get("amount_sol", 0.1)
         slippage = settings["slippage"]
         is_limit_order = data.get("is_limit_order", False)
-        trigger_price_percent = data.get("trigger_price_percent")
+        trigger_price_percent = data.get("trigger_price_percent", 20)
+        logger.info(f"[BUY] Current state data: {data}")
 
         if not token_address:
             await message.edit_text(
@@ -445,7 +460,7 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
                 ])
             )
             return
-
+        print(f"is_limit_order: {is_limit_order}")
         # Получаем баланс пользователя
         if not user_id:
             user_id = get_real_user_id(message)
@@ -500,6 +515,7 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         keyboard.append([InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")])
 
         # Для лимитного ордера добавляем кнопку установки триггерной цены
+        print(f"is_limit_order: {is_limit_order}")
         if is_limit_order:
             trigger_price_text = f"💵 Trigger Price: {trigger_price_percent}%" if trigger_price_percent else "💵 Set Trigger Price"
             if trigger_price_percent:
@@ -519,6 +535,11 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         # Кнопка назад
         keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
 
+        if is_limit_order:
+            addiction = (f"⚙️ Slippage: {slippage}%\n" if slippage else "") + (f"💵 Trigger Price: {trigger_price_percent}% (${token_info.price_usd * (1 + (trigger_price_percent / 100)):.6f})\n" if trigger_price_percent else "")
+        else:
+            addiction = ""
+
         # Формируем сообщение
         message_text = (
             f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -526,8 +547,7 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
             f"💰 Баланс кошелька:\n"
             f"• SOL Balance: {_format_price(balance)} SOL (${usd_balance:.2f})\n\n"
             + (f"💰 Выбранная сумма: {_format_price(amount_sol)} SOL\n" if amount_sol else "")
-            + (f"⚙️ Slippage: {slippage}%\n" if slippage else "")
-            + (f"💵 Trigger Price: {trigger_price_percent}% (${token_info.price_usd * (1 + (trigger_price_percent / 100)):.6f})\n" if trigger_price_percent else "")
+            + addiction
             + f"\n📊 Информация о токене:\n"
             + f"• Price: ${_format_price(token_info.price_usd)}\n"
             + f"• MC: ${_format_price(token_info.market_cap)}\n"
@@ -572,6 +592,7 @@ async def handle_set_trigger_price(callback_query: types.CallbackQuery, state: F
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
             ])
         )
+        return
     except Exception as e:
         logger.error(f"Error setting trigger price: {e}")
         await callback_query.answer("❌ Произошла ошибка")
@@ -1019,14 +1040,4 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         )
 
 
-@router.callback_query(lambda c: c.data == "limit_buy", flags={"priority": 3})
-async def handle_limit_buy(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    """Обработчик для создания лимитного ордера на покупку"""
-    try:
-        # Устанавливаем флаг лимитного ордера в состоянии
-        await state.update_data(is_limit_order=True)
-        # Показываем обновленное меню покупки
-        await show_buy_menu(callback_query.message, state, session)
-    except Exception as e:
-        logger.error(f"Error handling limit buy: {e}")
-        await callback_query.answer("❌ Произошла ошибка")
+
