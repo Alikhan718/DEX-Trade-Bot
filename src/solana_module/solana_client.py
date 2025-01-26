@@ -251,12 +251,12 @@ class SolanaClient:
                 logger.info(f"Attempting to send Buy transaction {attempt + 1} of {retries}")
 
                 discriminator = struct.pack("<Q", 16927863322537952870)
-                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10 ** 6))
-                max_amount_packed = struct.pack("<Q", params['max_amount_lamports'])
+                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10 ** TOKEN_DECIMALS))
+                max_amount_packed = struct.pack("<Q", int(params['max_amount_lamports']))
                 data = discriminator + token_amount_packed + max_amount_packed
 
                 buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
-                compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
+                compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
 
                 tx_buy = Transaction().add(buy_ix).add(compute_budget_ix)
                 tx_buy.recent_blockhash = (
