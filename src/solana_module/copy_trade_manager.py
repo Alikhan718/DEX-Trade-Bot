@@ -379,11 +379,25 @@ class CopyTradeManager:
                         logger.info(f"[MANAGER] Executing {tx_type} transaction for user {trade.user_id}")
                         try:
                             if tx_type == "BUY":
+                                # Получаем информацию о цене токена
+                                curve_state = await user_client.get_pump_curve_state(bonding_curve_address)
+                                token_price_sol = user_client.calculate_pump_curve_price(curve_state)
+                                
+                                # Рассчитываем количество токенов с учетом slippage
+                                # Уменьшаем сумму SOL на процент slippage для компенсации
+                                adjusted_sol_amount = copy_amount * (1 - trade.buy_slippage/100)
+                                token_amount = adjusted_sol_amount / token_price_sol
+                                
+                                logger.info(f"[MANAGER] Original amount: {copy_amount} SOL")
+                                logger.info(f"[MANAGER] Adjusted amount with {trade.buy_slippage}% slippage: {adjusted_sol_amount} SOL")
+                                logger.info(f"[MANAGER] Token amount to buy: {token_amount}")
+                                logger.info(f"[MANAGER] COPY BUYS SLIPPAGE: {trade.buy_slippage}")
+                                
                                 result = await user_client.buy_token(
                                     mint=mint,
                                     bonding_curve=bonding_curve_address,
                                     associated_bonding_curve=associated_bonding_curve,
-                                    amount=copy_amount,
+                                    amount=adjusted_sol_amount,  # Используем скорректированную сумму
                                     slippage=trade.buy_slippage / 100  # Convert percentage to decimal
                                 )
                             else:  # SELL
@@ -417,8 +431,13 @@ class CopyTradeManager:
                                 await session.commit()
 
                             else:
-                                # Если результат это словарь с ошибкой
-                                error_message = result.get("error", "Transaction execution failed")
+                                # Если результат это словарь с ошибкой или None
+                                error_message = "Transaction execution failed"
+                                if result is not None and isinstance(result, dict):
+                                    error_message = result.get("error", error_message)
+                                elif result is None:
+                                    error_message = "Transaction returned no result"
+                                
                                 logger.error(f"[MANAGER] Transaction failed for user {trade.user_id}: {error_message}")
                                 new_transaction.status = "FAILED"
                                 new_transaction.error = error_message

@@ -94,27 +94,50 @@ class RateLimiter:
 
 
 # Инициализация RateLimiter: например, max 3 вызова в секунду
-rate_limiter = RateLimiter(max_calls=3, period=1.0)
+rate_limiter = RateLimiter(max_calls=1, period=1.0)  # More conservative rate limit
 
+# Добавляем глобальный rate limiter для всех клиентов
+global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
 
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
-    await rate_limiter.acquire()
-    return await request_func(*args, **kwargs)
-
+    """Send request with both per-client and global rate limiting"""
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await rate_limiter.acquire()
+            await global_rate_limiter.acquire()
+            return await request_func(*args, **kwargs)
+        except Exception as e:
+            if not is_rate_limit_error(e) or attempt == max_retries - 1:
+                raise
+            
+            # Exponential backoff
+            delay = base_delay * (2 ** attempt)
+            logger.info(f"Rate limit hit, retrying in {delay:.2f} seconds...")
+            await asyncio.sleep(delay)
+    
+    raise Exception("Failed after max retries")
 
 def is_rate_limit_error(exception):
-    """
-    Функция-предикат для проверки, является ли исключение ошибкой HTTP 429.
-    """
-    return (
-            isinstance(exception, httpx.HTTPStatusError) and
-            exception.response.status_code == 429
-    )
-
+    """Check if the exception is a rate limit error"""
+    if isinstance(exception, httpx.HTTPStatusError):
+        return exception.response.status_code == 429
+    # Also check for RPC node specific rate limit errors
+    if isinstance(exception, Exception):
+        error_msg = str(exception).lower()
+        return any(msg in error_msg for msg in [
+            "rate limit exceeded",
+            "too many requests",
+            "please slow down",
+            "429"
+        ])
+    return False
 
 class SolanaClient:
     def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
-        self.rpc_endpoint = os.getenv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
+        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://solana-mainnet.core.chainstack.com/1477348d5255a5a82def1ba221b5a610")
         self.compute_unit_price = compute_unit_price
         self.client = AsyncClient(self.rpc_endpoint)
         self._private_key = private_key
@@ -684,13 +707,14 @@ class SolanaClient:
                 # logger.info(f"[CLIENT] Extracted token address: {token_address}")
 
                 for account_key in tx_info.value.transaction.transaction.message.account_keys:
-                    logger.info(f"[CLIENT] Account key: {account_key}")
+                    #logger.info(f"[CLIENT] Account key: {account_key}")
                     if check_mint(account_key):
                         token_address = account_key
                         logger.info(f"[CLIENT] Found token address: {token_address}")
                         break
                     else:
-                        logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+                        #logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+                        pass
 
             # Convert to dict before JSON serialization
             tx_info_dict = {
