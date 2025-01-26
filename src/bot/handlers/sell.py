@@ -15,6 +15,9 @@ from src.solana_module.transaction_handler import UserTransactionHandler
 from src.solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
 from src.bot.states import SellStates
 from src.bot.crud import get_user_setting, update_user_setting
+from src.solana_module.solana_client import SolanaClient
+from src.solana_module.token_info import token_info
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -35,21 +38,54 @@ def _is_valid_token_address(address: str) -> bool:
 
 
 @router.callback_query(F.data == "sell", flags={"priority": 3})
-async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext):
+async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Обработчик нажатия кнопки Продать в главном меню"""
     try:
         await state.set_state(SellStates.waiting_for_token)
+        
+                # Get user's token balance
+        user_id = get_real_user_id(callback_query)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+        compute_unit_price = await get_user_setting(user_id, 'sell', session)
+        
+        #solana_client = SolanaClient(compute_unit_price['gas_fee'], user.private_key)
+        # token_accounts = await solana_client.get_account_tokens(Pubkey.from_string(user.solana_wallet))
+        # await solana_client.get_tokens(strtoken_accounts[0])
+        # tokens = [token_info(str(token)) for token in tokens]
+        
+        
+        # token_links = [
+        #     f"[{token['baseTokenSymbol']} {token['baseToken']['name']}](tg://user?id={callback_query.from_user.id}&start=token_{token['baseToken']['address']})"
+        #     for token in tokens
+        # ]
+        # token_links_text = "\n".join(token_links)
+        
+        if not user:
+            await callback_query.answer("❌ Пользователь не найден")
+            return
+        
+        
         await callback_query.message.edit_text(
             "🔍 Введите адрес токена, который хотите продать:\n"
             "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
+            #f"{token_links_text}\n\n",
             parse_mode="MARKDOWN",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
         )
     except Exception as e:
+        print(traceback.format_exc())
         logger.error(f"Error in sell button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+        
+
+@router.message(F.text.startswith("token_"), flags={"priority": 2})
+async def on_token_selected_via_link(message: types.Message, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
+    message.text = message.text.split("_")[1]
+    await handle_token_input(message, state, session, solana_service)
 
 
 @router.message(SellStates.waiting_for_token, flags={"priority": 2})
@@ -74,6 +110,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
+        
 
         if not user:
             await message.reply("❌ Пользователь не найден")

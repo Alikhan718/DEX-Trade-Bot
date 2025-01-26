@@ -775,6 +775,10 @@ class SolanaClient:
             import traceback
             logger.error(f"[CLIENT] Traceback: {traceback.format_exc()}")
             return 0
+        
+    async def get_tokens(self, wallet_address) -> float:
+        #sewallet_address = Pubkey.from_string(wallet_address)
+        print(await self.client.get_account_info(wallet_address))
 
 
 def check_mint(account: Pubkey) -> bool:
