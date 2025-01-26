@@ -470,6 +470,20 @@ async def handle_limit_buy(callback_query: types.CallbackQuery, state: FSMContex
     except Exception as e:
         logger.error(f"Error handling limit buy: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+        
+        
+@router.callback_query(lambda c: c.data == "market_buy", flags={"priority": 3})
+async def handle_market_buy(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Обработчик для создания лимитного ордера на покупку"""
+    try:
+        # Устанавливаем флаг лимитного ордера в состоянии
+        await state.update_data(is_limit_order=False)
+        # Показываем обновленное меню покупки
+        logger.info("[BUY] Showed buy menu")
+        await show_buy_menu(callback_query.message, state, session, callback_query.from_user.id)
+    except Exception as e:
+        logger.error(f"Error handling buy: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
 
 
 async def show_buy_menu(message: types.Message, state: FSMContext, session: AsyncSession, user_id=None):
