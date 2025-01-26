@@ -12,7 +12,7 @@ from typing import Union
 
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
-from src.database.models import User
+from src.database.models import User, LimitOrder
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.bot.states import BuyStates, AutoBuySettingsStates
@@ -216,6 +216,8 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         token_address = data.get("token_address")
         amount_sol = data.get("amount_sol", 0.0)
         slippage = data.get("slippage", 1.0)
+        is_limit_order = data.get("is_limit_order", False)
+        trigger_price_percent = data.get("trigger_price_percent")
 
         logger.info(f"Buy parameters - Token: {token_address}, Amount: {amount_sol} SOL, Slippage: {slippage}%")
 
@@ -224,6 +226,49 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             await callback_query.answer("❌ Не указан токен или сумма")
             return
 
+        if is_limit_order:
+            if not trigger_price_percent:
+                logger.error("Missing trigger price for limit order")
+                await callback_query.answer("❌ Не указана триггерная цена")
+                return
+
+            # Get current token price
+            token_info = await token_info_service.get_token_info(token_address)
+            if not token_info:
+                logger.error("Failed to get token info")
+                await callback_query.answer("❌ Не удалось получить информацию о токене")
+                return
+
+            # Calculate trigger price in USD
+            trigger_price_usd = token_info.price_usd * (1 + (trigger_price_percent / 100))
+
+            # Create limit order
+            limit_order = LimitOrder(
+                user_id=user.id,
+                token_address=token_address,
+                amount_sol=amount_sol,
+                trigger_price_usd=trigger_price_usd,
+                trigger_price_percent=trigger_price_percent,
+                slippage=slippage,
+                status='active'
+            )
+            session.add(limit_order)
+            await session.commit()
+
+            # Send confirmation message
+            await callback_query.message.edit_text(
+                "✅ Лимитный ордер создан!\n\n"
+                f"💰 Сумма: {_format_price(amount_sol)} SOL\n"
+                f"📈 Триггерная цена: {trigger_price_percent}% (${_format_price(trigger_price_usd)})\n"
+                f"⚙️ Slippage: {slippage}%\n\n"
+                "Ордер будет исполнен автоматически при достижении указанной цены.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            return
+
+        # Regular market buy...
         # Initialize transaction handler with user's private key
         try:
             buy_settings = await get_user_setting(user_id, 'buy', session)
@@ -1043,6 +1088,130 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
             ])
         )
+
+
+@router.callback_query(F.data == "limit_orders", flags={"priority": 3})
+async def show_limit_orders(callback_query: types.CallbackQuery, session: AsyncSession):
+    """Показать список активных лимитных ордеров"""
+    try:
+        user_id = get_real_user_id(callback_query)
+        
+        # Получаем пользователя
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+        
+        if not user:
+            await callback_query.answer("❌ Пользователь не найден")
+            return
+
+        # Получаем активные ордера пользователя
+        stmt = (
+            select(LimitOrder)
+            .where(
+                LimitOrder.user_id == user.id,
+                LimitOrder.status == 'active'
+            )
+            .order_by(LimitOrder.created_at.desc())
+        )
+        result = await session.execute(stmt)
+        orders = result.scalars().all()
+
+        if not orders:
+            await callback_query.message.edit_text(
+                "📊 Лимитные ордера\n\n"
+                "У вас нет активных лимитных ордеров.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            return
+
+        # Формируем сообщение со списком ордеров
+        message_text = "📊 Лимитные ордера\n\n"
+        keyboard = []
+
+        for order in orders:
+            # Получаем информацию о токене
+            token_info = await token_info_service.get_token_info(order.token_address)
+            if not token_info:
+                continue
+
+            # Добавляем информацию об ордере
+            message_text += (
+                f"🎯 Ордер #{order.id}\n"
+                f"💰 Сумма: {_format_price(order.amount_sol)} SOL\n"
+                f"📈 Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
+                f"💎 Токен: {token_info.symbol}\n"
+                f"⚙️ Slippage: {order.slippage}%\n"
+                f"📅 Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "➖➖➖➖➖➖➖➖➖➖\n\n"
+            )
+
+            # Добавляем кнопку отмены для каждого ордера
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"❌ Отменить #{order.id}",
+                    callback_data=f"cancel_limit_order_{order.id}"
+                )
+            ])
+
+        # Добавляем кнопку "Назад"
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")])
+
+        await callback_query.message.edit_text(
+            message_text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+
+    except Exception as e:
+        logger.error(f"Error showing limit orders: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.callback_query(lambda c: c.data.startswith("cancel_limit_order_"), flags={"priority": 3})
+async def cancel_limit_order(callback_query: types.CallbackQuery, session: AsyncSession):
+    """Отменить лимитный ордер"""
+    try:
+        user_id = get_real_user_id(callback_query)
+        order_id = int(callback_query.data.split('_')[-1])
+
+        # Получаем ордер
+        stmt = (
+            select(LimitOrder)
+            .where(
+                LimitOrder.id == order_id,
+                LimitOrder.status == 'active'
+            )
+        )
+        result = await session.execute(stmt)
+        order = result.scalar_one_or_none()
+
+        if not order:
+            await callback_query.answer("❌ Ордер не найден или уже отменен")
+            return
+
+        # Проверяем, принадлежит ли ордер пользователю
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+
+        if not user or order.user_id != user.id:
+            await callback_query.answer("❌ У вас нет прав на отмену этого ордера")
+            return
+
+        # Отменяем ордер
+        order.status = 'cancelled'
+        await session.commit()
+
+        await callback_query.answer("✅ Ордер успешно отменен")
+
+        # Обновляем список ордеров
+        await show_limit_orders(callback_query, session)
+
+    except Exception as e:
+        logger.error(f"Error cancelling limit order: {e}")
+        await callback_query.answer("❌ Произошла ошибка при отмене ордера")
 
 
 
