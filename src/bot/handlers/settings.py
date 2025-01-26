@@ -163,7 +163,7 @@ async def edit_setting(callback_query: types.CallbackQuery, state: FSMContext, s
                 example = "15"
             elif attribute == 'gasfee':
                 attribute = "Gas Fee"
-                example = "10000"
+                example = "0.001"
             if setting_type == "buy":
                 setting_name = "Покупки"
             else:

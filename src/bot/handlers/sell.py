@@ -9,6 +9,7 @@ from solders.pubkey import Pubkey
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
 from src.database.models import User
+from .buy import _format_price
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
@@ -31,15 +32,6 @@ def _is_valid_token_address(address: str) -> bool:
     except Exception:
         return False
 
-
-def _format_price(amount: float) -> str:
-    """Форматирует цену в читаемый вид"""
-    if amount >= 1_000_000:
-        return f"{amount / 1_000_000:.2f}M"
-    elif amount >= 1_000:
-        return f"{amount / 1_000:.1f}K"
-    else:
-        return f"{amount:.2f}"
 
 
 @router.callback_query(F.data == "sell", flags={"priority": 3})
@@ -269,8 +261,8 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             await status_message.edit_text(
                 "✅ Токен успешно продан!\n\n"
                 f"💰 Продано: {amount_tokens:.6f} токенов ({sell_type})\n"
-                f"💵 Цена: {current_price_sol:.6f} SOL\n"
-                f"💰 Получено: {(amount_tokens * current_price_sol):.4f} SOL\n"
+                f"💵 Цена: {_format_price(current_price_sol)} SOL\n"
+                f"💰 Получено: {_format_price(amount_tokens * current_price_sol)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
                 disable_web_page_preview=True,

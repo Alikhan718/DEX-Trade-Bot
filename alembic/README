@@ -1,1 +1,14 @@
-Generic single-database configuration.
+command to generate migration:
+ - alembic revision --autogenerate -m "Your migration message"
+command to execute migration
+ - alembic upgrade head
+
+ NOTE: all commands should be executed from root folder of "app" folder
+ | - { root_folder } <- (Commands should be executed from here)
+ | --- alembic/
+ | --- --- README <- (This File)
+ | --- scripts/
+ | --- src/
+ | --- tests/
+ | --- alembic.ini
+ | --- requirements.txt

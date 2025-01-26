@@ -196,7 +196,7 @@ class SolanaClient:
                 owner=self.payer.pubkey(),
                 mint=mint
             )
-            compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
+            compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
             tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
             tx_ata.recent_blockhash = (
                 await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
@@ -393,7 +393,7 @@ class SolanaClient:
             raise ValueError("Invalid reserves state")
 
         price = (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (
-                    curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
+                curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
         logger.info(f"Calculated token price: {price:.10f} SOL")
         return price
 
@@ -477,7 +477,7 @@ class SolanaClient:
 
                 recent_blockhash = await self.client.get_latest_blockhash()
                 transaction = Transaction()
-                transaction.add(sell_ix).add(set_compute_unit_price(self.compute_unit_price))
+                transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price)))
                 transaction.recent_blockhash = recent_blockhash.value.blockhash
                 transaction.fee_payer = self.payer.pubkey()
                 transaction.sign(self.payer)

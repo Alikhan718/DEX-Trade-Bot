@@ -54,11 +54,11 @@ def _format_price(amount, format_length=2) -> str:
         leading_zeros = len(frac_part) - len(frac_part.lstrip('0'))
 
         # Преобразуем эти нули в маленькие цифры
-        frac_part_small = ''.join(small_digits[digit] for digit in str(leading_zeros))
+        frac_part_small = ''.join(small_digits[digit] for digit in str(leading_zeros if leading_zeros > 0 else ''))
         # Оставшиеся цифры — обычные
         frac_part_normal = frac_part[leading_zeros:]
 
-        return f"{int_part}.{frac_part_small}{frac_part_normal}"
+        return f"{int_part}{'.' if frac_part_normal else ''}{frac_part_small if frac_part_normal else ''}{frac_part_normal}"
 
     if amount >= 1_000_000:
         return f"{amount / 1_000_000:.{format_length}f}M"
@@ -735,9 +735,10 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
             await state.set_state(BuyStates.waiting_for_amount)
             return
         amount = float(amount)
-        prev_amount = await state.get_value('amount_sol', -1)
+        prev_amount = await state.get_value('amount_sol', 0.1)
         if amount == float(prev_amount):
             return
+        print(prev_amount, amount)
         await state.update_data(amount_sol=amount)
 
         await show_buy_menu(callback_query.message, state, session, callback_query.from_user.id)
