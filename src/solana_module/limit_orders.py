@@ -1,110 +1,159 @@
 import aiohttp
 import asyncio
-from typing import Callable, Optional
+import logging
+from typing import Optional
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.database.models import LimitOrder, User
+from src.solana_module.transaction_handler import UserTransactionHandler
 
+logger = logging.getLogger(__name__)
 
 class AsyncLimitOrders:
-    def __init__(self, token: str):
+    def __init__(self, session_factory):
         """
         Инициализация класса.
-        :param token: Идентификатор токена для отслеживания.
+        :param session_factory: Фабрика сессий SQLAlchemy для работы с БД
         """
-        self.token = token
-        self.url = "https://api.coinmarketcap.com/dexer/v3/dexer/search/main-site"
-        self.users = []  # Список пользователей и их настроек
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.session_factory = session_factory
+        self.session = None
         self._running = False
+        self.url = "https://public-api.birdeye.so/public/price"
+        self.headers = {"X-API-KEY": "f5b0a449b5914cf3bc0e1238db0a5b3f"}
 
     async def start(self):
-        """
-        Асинхронный метод для инициализации (например, открытия ClientSession).
-        """
+        """Инициализация HTTP сессии"""
         self.session = aiohttp.ClientSession()
+        logger.info("HTTP session initialized")
 
     async def close(self):
-        """
-        Асинхронный метод для освобождения ресурсов (например, закрытия ClientSession).
-        """
+        """Закрытие HTTP сессии"""
         if self.session:
             await self.session.close()
+            logger.info("HTTP session closed")
 
-    async def fetch_token_info(self) -> Optional[float]:
+    async def get_token_price(self, token_address: str) -> Optional[float]:
         """
-        Асинхронно получает текущую цену токена.
-        :return: Цена токена (float) или None в случае ошибки.
+        Получает текущую цену токена через API
+        :param token_address: Адрес токена
+        :return: Цена токена в USD или None в случае ошибки
         """
-        if not self.session:
-            raise RuntimeError("Сессия не запущена. Сначала вызовите метод 'start()'.")
-
-        params = {
-            "keyword": self.token,
-            "all": "false"
-        }
-        headers = {
-            "User-Agent": f"Custom/{int(asyncio.get_event_loop().time())}"
-        }
-
         try:
-            async with self.session.get(self.url, params=params, headers=headers) as response:
+            params = {"address": token_address}
+            async with self.session.get(self.url, headers=self.headers, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
-
-                    # Проверяем, что нужные ключи присутствуют
-                    if (
-                        "data" in data and
-                        "pairs" in data["data"] and
-                        len(data["data"]["pairs"]) > 0 and
-                        "priceUsd" in data["data"]["pairs"][0]
-                    ):
-                        return float(data["data"]["pairs"][0]["priceUsd"])
-                    else:
-                        print("Неверный формат ответа API:", data)
-                        return None
-                else:
-                    print(f"Ошибка API: {response.status}, {await response.text()}")
-                    return None
-        except aiohttp.ClientError as e:
-            print(f"Сетевая ошибка: {e}")
+                    return data.get('data', {}).get('value')
+                logger.warning(f"Failed to get price for {token_address}. Status: {response.status}")
+                return None
+        except Exception as e:
+            logger.error(f"Error getting token price: {str(e)}")
             return None
 
-    def add_user(self, user_name: str, action: Callable[[float], None]):
+    async def execute_order(self, order: LimitOrder, session: AsyncSession) -> bool:
         """
-        Добавляет пользователя с его действием в список.
-        :param user_name: Имя пользователя.
-        :param action: Функция действия, которая принимает текущую цену токена.
+        Выполняет лимитный ордер
+        :param order: Объект лимитного ордера
+        :param session: Сессия SQLAlchemy
+        :return: True если ордер успешно выполнен, False в противном случае
         """
-        self.users.append({"name": user_name, "action": action})
+        try:
+            # Получаем пользователя
+            stmt = select(User).where(User.id == order.user_id)
+            result = await session.execute(stmt)
+            user = result.unique().scalar_one_or_none()
+            
+            if not user or not user.private_key:
+                logger.error(f"User not found or no private key for order {order.id}")
+                return False
+
+            # Создаем обработчик транзакций
+            tx_handler = UserTransactionHandler(
+                private_key_str=user.private_key,
+                compute_unit_price=100000  # Default compute unit price
+            )
+
+            # Выполняем транзакцию в зависимости от типа ордера
+            if order.order_type == 'buy':
+                tx_hash = await tx_handler.buy_token(
+                    token_address=order.token_address,
+                    amount_sol=order.amount_sol,
+                    slippage=order.slippage
+                )
+            else:  # sell
+                tx_hash = await tx_handler.sell_token(
+                    token_address=order.token_address,
+                    amount_tokens=order.amount_tokens,
+                    slippage=order.slippage
+                )
+            
+            if tx_hash:
+                # Обновляем статус ордера
+                order.status = 'executed'
+                order.transaction_hash = tx_hash
+                await session.commit()
+                logger.info(f"Order {order.id} executed successfully. Hash: {tx_hash}")
+                return True
+            
+            logger.error(f"Failed to execute order {order.id}")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error executing order {order.id}: {str(e)}")
+            return False
+
+    async def check_and_execute_orders(self):
+        """
+        Проверяет все активные ордера и выполняет те, которые достигли целевой цены
+        """
+        async with self.session_factory() as session:
+            try:
+                # Получаем все активные ордера
+                stmt = select(LimitOrder).where(LimitOrder.status == 'active')
+                result = await session.execute(stmt)
+                active_orders = result.scalars().all()
+
+                for order in active_orders:
+                    # Получаем текущую цену токена
+                    current_price = await self.get_token_price(order.token_address)
+                    if current_price is None:
+                        continue
+
+                    # Проверяем условие срабатывания в зависимости от типа ордера
+                    should_execute = False
+                    if order.order_type == 'buy' and current_price <= order.trigger_price_usd:
+                        should_execute = True
+                        logger.info(f"Buy order {order.id} triggered at price {current_price} <= {order.trigger_price_usd}")
+                    elif order.order_type == 'sell' and current_price >= order.trigger_price_usd:
+                        should_execute = True
+                        logger.info(f"Sell order {order.id} triggered at price {current_price} >= {order.trigger_price_usd}")
+
+                    if should_execute:
+                        await self.execute_order(order, session)
+
+            except Exception as e:
+                logger.error(f"Error checking orders: {str(e)}")
 
     async def monitor_prices(self, interval: int = 20):
         """
         Асинхронный цикл мониторинга цен.
         :param interval: Интервал проверки цен (в секундах).
         """
-        if not self.session:
-            raise RuntimeError("Сессия не запущена. Сначала вызовите метод 'start()'.")
-
         self._running = True
-        print("Начало мониторинга цен токена...")
+        logger.info("Starting limit orders monitoring...")
 
         while self._running:
-            current_price = await self.fetch_token_info()
-            if current_price is not None:
-                print(f"Текущая цена токена: {current_price}")
-                for user in self.users:
-                    try:
-                        user['action'](current_price)
-                    except Exception as e:
-                        print(f"Ошибка при выполнении действия для {user['name']}: {e}")
-            else:
-                print("Не удалось получить цену токена.")
-
+            await self.check_and_execute_orders()
             await asyncio.sleep(interval)
+
+        logger.info("Limit orders monitoring stopped")
 
     def stop(self):
         """
         Останавливает цикл мониторинга.
         """
         self._running = False
+        logger.info("Stopping limit orders monitoring...")
 
 
 def example_action_factory(target_price: float, action_type: str):
@@ -124,7 +173,7 @@ def example_action_factory(target_price: float, action_type: str):
 
 async def main():
     # Создаём экземпляр класса
-    limit_orders = AsyncLimitOrders("4q9fJRXnGLNJiavjaySmvrg9gkFaGW77Ci19x29dpump")
+    limit_orders = AsyncLimitOrders(lambda: AsyncSession())
 
     # Запускаем сессию
     await limit_orders.start()

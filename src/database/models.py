@@ -264,7 +264,9 @@ class LimitOrder(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), index=True)
     token_address = Column(String(44), nullable=False)
-    amount_sol = Column(Float, nullable=False)
+    order_type = Column(String(4), nullable=False)  # 'buy' or 'sell'
+    amount_sol = Column(Float, nullable=True)  # Amount in SOL for buy orders
+    amount_tokens = Column(Float, nullable=True)  # Amount in tokens for sell orders
     trigger_price_usd = Column(Float, nullable=False)
     trigger_price_percent = Column(Float, nullable=False)
     slippage = Column(Float, default=1.0)

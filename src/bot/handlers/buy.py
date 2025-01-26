@@ -246,6 +246,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             limit_order = LimitOrder(
                 user_id=user.id,
                 token_address=token_address,
+                order_type='buy',
                 amount_sol=amount_sol,
                 trigger_price_usd=trigger_price_usd,
                 trigger_price_percent=trigger_price_percent,

@@ -15,6 +15,7 @@ from src.services.rugcheck import RugCheckService
 from .middleware import DatabaseMiddleware, ServicesMiddleware
 from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell, settings
 from .services.copy_trade_service import CopyTradeService
+from src.solana_module.limit_orders import AsyncLimitOrders
 
 logger = setup_logging()
 
@@ -34,6 +35,9 @@ class SolanaDEXBot:
             self.rugcheck_service = RugCheckService()
             self.copy_trade_service = CopyTradeService()
             self.copy_trade_service.set_bot(self.bot)  # Set bot instance for notifications
+            
+            # Initialize limit orders service
+            self.limit_orders_service = None  # Will be initialized after DB setup
 
             # Setup database
             self.engine = create_async_engine(
@@ -100,6 +104,16 @@ class SolanaDEXBot:
     async def start(self):
         """Start the bot polling"""
         try:
+            # Initialize limit orders service
+            logger.info("Starting limit orders monitoring...")
+            self.limit_orders_service = AsyncLimitOrders(self.Session)
+            await self.limit_orders_service.start()
+            
+            # Start monitoring in background
+            self.limit_orders_task = asyncio.create_task(
+                self.limit_orders_service.check_and_execute_orders()
+            )
+
             # Start copy trade service
             logger.info("Starting copy trade service...")
             async with self.Session() as session:
@@ -111,6 +125,8 @@ class SolanaDEXBot:
             logger.error(f"Bot polling error: {e}")
         finally:
             # Cleanup
+            if hasattr(self, 'limit_orders_service'):
+                await self.limit_orders_service.close()
             if hasattr(self, 'copy_trade_service'):
                 await self.copy_trade_service.stop()
             if hasattr(self, 'rugcheck_service'):
