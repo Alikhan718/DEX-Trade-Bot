@@ -20,7 +20,7 @@ from solana.transaction import Transaction
 import spl.token.instructions as spl_token
 from spl.token.instructions import get_associated_token_address
 from construct import Struct, Int64ul, Flag
-
+from solders.system_program import TransferParams, transfer
 from tenacity import (
     retry,
     wait_exponential,
@@ -30,6 +30,7 @@ from tenacity import (
 )
 
 from dotenv import load_dotenv
+import requests
 
 import httpx  # Используется в обработке исключений
 
@@ -54,6 +55,7 @@ load_dotenv()
 EXPECTED_DISCRIMINATOR = struct.pack("<Q", 6966180631402821399)
 TOKEN_DECIMALS = 6
 LAMPORTS_PER_SOL = 1_000_000_000
+url = "https://api.coinmarketcap.com/dexer/v3/dexer/search/main-site"
 
 
 class BondingCurveState:
@@ -779,6 +781,130 @@ class SolanaClient:
     async def get_tokens(self, wallet_address) -> float:
         #sewallet_address = Pubkey.from_string(wallet_address)
         print(await self.client.get_account_info(wallet_address))
+        
+    async def send_transfer_transaction(
+        self,
+        recipient_address: str,
+        amount_sol: float,
+        is_token_transfer: bool = False,
+        token_mint: Optional[Pubkey] = None,
+    ) -> Optional[str]:
+        """
+        Sends a transfer transaction (SOL or token).
+
+        Args:
+            recipient_address (str): The recipient's wallet address.
+            amount_sol (float): The amount to send (in SOL or tokens).
+            is_token_transfer (bool): Set to True for SPL token transfers.
+            token_mint (Optional[Pubkey]): The mint address of the token (required for token transfers).
+
+        Returns:
+            Optional[str]: The transaction signature, or None if the transfer failed.
+        """
+        try:
+            payer = self.load_keypair()
+            recipient = Pubkey.from_string(recipient_address)
+            transaction = Transaction()
+
+            if is_token_transfer:
+                if not token_mint:
+                    raise ValueError("Token mint address is required for token transfers")
+
+                associated_token_account = get_associated_token_address(recipient, token_mint)
+                payer_token_account = get_associated_token_address(payer.pubkey(), token_mint)
+
+                # Add SPL token transfer instruction
+                transfer_ix = spl_token.transfer(
+                    spl_token.TransferParams(
+                    source=payer_token_account,
+                    dest=associated_token_account,
+                    owner=payer.pubkey(),
+                    amount=int(amount_sol * (10 ** TOKEN_DECIMALS)),
+                    program_id=self.PUMP_PROGRAM,
+                    )
+                )
+                transaction.add(transfer_ix)
+
+            else:
+                # Add SOL transfer instruction
+                lamports = int(amount_sol * LAMPORTS_PER_SOL)
+                transfer_ix = transfer(
+                    TransferParams(
+                        from_pubkey=payer.pubkey(),
+                        to_pubkey=recipient,
+                        lamports=lamports
+                    )
+                )
+                transaction.add(transfer_ix)
+
+            # Fetch recent blockhash and prepare transaction
+            recent_blockhash = await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)
+            transaction.recent_blockhash = recent_blockhash.value.blockhash
+            transaction.fee_payer = payer.pubkey()
+            transaction.sign(payer)
+
+            # Send transaction
+            tx_signature = await send_request_with_rate_limit(
+                self.client,
+                self.client.send_transaction,
+                transaction,
+                payer,
+                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+            )
+            logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_signature.value}")
+
+            # Confirm transaction
+            await self.confirm_transaction_with_delay(tx_signature.value)
+            logger.info(f"Transaction confirmed: {tx_signature.value}")
+            return tx_signature.value
+
+        except Exception as e:
+            logger.error(f"Failed to send transfer transaction: {e}")
+            logger.error(traceback.format_exc())
+            return None
+        
+    async def token_info(self, mint: str):
+        params = {
+            "keyword": mint,
+            "all": "false"
+        }
+
+        timestamp = int(time.time())
+        user_agent = f"Custom/{timestamp}"
+
+        # Заголовки запроса
+        headers = {
+            "User-Agent": user_agent
+        }
+
+        try:
+            # Выполнение GET-запроса
+            response = requests.get(url, params=params, headers=headers)
+            
+            # Проверка успешности запроса
+            if response.status_code == 200:
+                # Вывод данных в формате JSON
+                data = response.json()
+                return data['data']['pairs'][0]
+            else:
+                print(f"Ошибка: {response.status_code}, {response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"Произошла ошибка при выполнении запроса: {e}")
+        
+    async def get_tokens(self, wallet_address) -> float:
+        token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
+        mints = []
+        for token_account in token_accounts:
+            last = (await self.client.get_signatures_for_address(token_account)).value[0]
+            print(f"Last signature: {last}")
+            transaction_info = await self.get_transaction(last.signature)
+            if transaction_info is not None:
+                print(f'Mint address: {transaction_info['token_address']}')
+                mints.append(transaction_info['token_address'])
+            else:
+                print(f"Failed to get transaction info for signature: {last}")
+        return mints
+                
 
 
 def check_mint(account: Pubkey) -> bool:
@@ -826,3 +952,6 @@ def check_mint(account: Pubkey) -> bool:
     except Exception as e:
         logger.error(f"[CLIENT] Error in check_mint: {str(e)}")
         return False
+
+
+

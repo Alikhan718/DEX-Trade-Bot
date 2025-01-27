@@ -76,6 +76,7 @@ def _format_price(amount, format_length=2) -> str:
         return f"{amount:.{format_length}f}"
 
 
+
 @router.callback_query(F.data == "buy", flags={"priority": 3})
 async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Обработчик нажатия кнопки Купить в главном меню"""
