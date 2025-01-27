@@ -20,7 +20,7 @@ from solana.transaction import Transaction
 import spl.token.instructions as spl_token
 from spl.token.instructions import get_associated_token_address
 from construct import Struct, Int64ul, Flag
-
+from solders.system_program import TransferParams, transfer
 from tenacity import (
     retry,
     wait_exponential,
@@ -114,7 +114,7 @@ def is_rate_limit_error(exception):
 
 class SolanaClient:
     def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
-        self.rpc_endpoint = os.getenv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
+        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
         self.compute_unit_price = compute_unit_price
         self.client = AsyncClient(self.rpc_endpoint)
         self._private_key = private_key
@@ -755,6 +755,87 @@ class SolanaClient:
     async def get_tokens(self, wallet_address) -> float:
         #sewallet_address = Pubkey.from_string(wallet_address)
         print(await self.client.get_account_info(wallet_address))
+        
+    async def send_transfer_transaction(
+        self,
+        recipient_address: str,
+        amount_sol: float,
+        is_token_transfer: bool = False,
+        token_mint: Optional[Pubkey] = None,
+    ) -> Optional[str]:
+        """
+        Sends a transfer transaction (SOL or token).
+
+        Args:
+            recipient_address (str): The recipient's wallet address.
+            amount_sol (float): The amount to send (in SOL or tokens).
+            is_token_transfer (bool): Set to True for SPL token transfers.
+            token_mint (Optional[Pubkey]): The mint address of the token (required for token transfers).
+
+        Returns:
+            Optional[str]: The transaction signature, or None if the transfer failed.
+        """
+        try:
+            payer = self.load_keypair()
+            recipient = Pubkey.from_string(recipient_address)
+            transaction = Transaction()
+
+            if is_token_transfer:
+                if not token_mint:
+                    raise ValueError("Token mint address is required for token transfers")
+
+                associated_token_account = get_associated_token_address(recipient, token_mint)
+                payer_token_account = get_associated_token_address(payer.pubkey(), token_mint)
+
+                # Add SPL token transfer instruction
+                transfer_ix = spl_token.transfer(
+                    spl_token.TransferParams(
+                    source=payer_token_account,
+                    dest=associated_token_account,
+                    owner=payer.pubkey(),
+                    amount=int(amount_sol * (10 ** TOKEN_DECIMALS)),
+                    program_id=self.PUMP_PROGRAM,
+                    )
+                )
+                transaction.add(transfer_ix)
+
+            else:
+                # Add SOL transfer instruction
+                lamports = int(amount_sol * LAMPORTS_PER_SOL)
+                transfer_ix = transfer(
+                    TransferParams(
+                        from_pubkey=payer.pubkey(),
+                        to_pubkey=recipient,
+                        lamports=lamports
+                    )
+                )
+                transaction.add(transfer_ix)
+
+            # Fetch recent blockhash and prepare transaction
+            recent_blockhash = await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)
+            transaction.recent_blockhash = recent_blockhash.value.blockhash
+            transaction.fee_payer = payer.pubkey()
+            transaction.sign(payer)
+
+            # Send transaction
+            tx_signature = await send_request_with_rate_limit(
+                self.client,
+                self.client.send_transaction,
+                transaction,
+                payer,
+                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+            )
+            logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_signature.value}")
+
+            # Confirm transaction
+            await self.confirm_transaction_with_delay(tx_signature.value)
+            logger.info(f"Transaction confirmed: {tx_signature.value}")
+            return tx_signature.value
+
+        except Exception as e:
+            logger.error(f"Failed to send transfer transaction: {e}")
+            logger.error(traceback.format_exc())
+            return None
 
 
 def check_mint(account: Pubkey) -> bool:

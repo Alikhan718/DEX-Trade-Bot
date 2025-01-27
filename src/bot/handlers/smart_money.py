@@ -13,7 +13,7 @@ from src.bot.states import SmartMoneyStates
 logger = logging.getLogger(__name__)
 
 router = Router()
-smart_money_tracker = SmartMoneyTracker()
+smart_money_tracker = None #process
 
 
 def _is_valid_token_address(address: str) -> bool:
