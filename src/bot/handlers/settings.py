@@ -1,4 +1,5 @@
 import traceback
+from pprint import pprint
 from typing import Union
 
 from aiogram import types
@@ -63,7 +64,7 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
         # Формируем текст меню
         menu_text = (
             "⚙️ Настройки\n\n"
-            "Выберите настройку для изменения:"
+            "Выберите настройку для изменения"
         )
         buy_settings_keyboard = []
         if 'buy' in settings_dict:
@@ -92,13 +93,16 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
         # Создаем список кнопок, распределяя их по строкам
         buttonRows = []
         max_len = max(len(buy_settings_keyboard), len(sell_settings_keyboard))
-        for i in range(max_len):
-            row = []
-            if i < len(buy_settings_keyboard):
-                row.append(buy_settings_keyboard[i])
-            if i < len(sell_settings_keyboard):
-                row.append(sell_settings_keyboard[i])
-            buttonRows.append(row)
+        # for i in range(max_len):
+        #     row = []
+        if len(buy_settings_keyboard):
+            buttonRows += buy_settings_keyboard
+        if len(sell_settings_keyboard):
+            buttonRows += sell_settings_keyboard
+        print("BUTTONS")
+        pprint(buttonRows)
+        buttonRows = [[btn] for btn in buttonRows]
+        # buttonRows.append(row)
 
         # Определение состояния Anti MEV
         anti_mev_text = '🟢 Anti MEV' if settings_dict.get('anti_mev', False) else '🔴 Anti MEV'
@@ -145,6 +149,9 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
             )
 
 
+from aiogram.types import ForceReply
+
+
 @router.callback_query(lambda c: c.data.startswith("edit_"))
 async def edit_setting(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Обработка редактирования настроек"""
@@ -153,10 +160,9 @@ async def edit_setting(callback_query: types.CallbackQuery, state: FSMContext, s
         setting_type = params[1]
         attribute = params[2] if len(params) > 2 else None
         user_id = get_real_user_id(callback_query)
-        action = None
         example = ""
         setting_name = ""
-        print(setting_type, attribute)
+
         if attribute and setting_type in ('buy', 'sell'):
             if attribute == 'slippage':
                 attribute = "Slippage"
@@ -167,26 +173,24 @@ async def edit_setting(callback_query: types.CallbackQuery, state: FSMContext, s
             if setting_type == "buy":
                 setting_name = "Покупки"
             else:
-                setting_name = 'Продажи'
+                setting_name = "Продажи"
 
-            await callback_query.message.edit_text(
-                f"⚙️ Редактирование настроек {setting_name}\n\n"
-                f"Введите новое значение для {attribute} (например, {example}):",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_menu")]
-                ])
+            # Отправляем сообщение с ForceReply
+            await callback_query.message.answer(
+                f"Введите новое значение для ⚙️{attribute} (например, {example}):",
+                reply_markup=ForceReply(selective=True)  # ForceReply активирует режим ответа
             )
+
+            # Устанавливаем состояние для ожидания ответа
             if setting_type == "buy":
                 if attribute == "Slippage":
                     await state.set_state(BuySettingStates.waiting_for_slippage)
                     logger.info("BuySettingStates.waiting_for_slippage")
                     return
                 elif attribute == "Gas Fee":
-                    if attribute == "Gas Fee":
-                        await state.set_state(BuySettingStates.waiting_for_gas_fee)
-                        await state.update_data(callback_query=callback_query)
-                        logger.info("BuySettingStates.waiting_for_gas_fee")
-                        return
+                    await state.set_state(BuySettingStates.waiting_for_gas_fee)
+                    logger.info("BuySettingStates.waiting_for_gas_fee")
+                    return
             else:
                 if attribute == "Slippage":
                     await state.set_state(SellSettingStates.waiting_for_slippage)
@@ -194,7 +198,7 @@ async def edit_setting(callback_query: types.CallbackQuery, state: FSMContext, s
                     return
                 elif attribute == "Gas Fee":
                     await state.set_state(SellSettingStates.waiting_for_gas_fee)
-                    logger.info("SellSettingStates.waiting_for_gas_fee ")
+                    logger.info("SellSettingStates.waiting_for_gas_fee")
                     return
 
         elif setting_type == "antimev":
@@ -258,8 +262,10 @@ async def handle_custom_settings_edit_base(
             if value > attribute_info.get('max') or value < attribute_info.get('min'):
                 raise ValueError
         except ValueError:
-            await message.reply(f"❌ Пожалуйста, введите числовое значение для {attribute_name} " + (
-                f"({attribute_info.get('min')} - {attribute_info.get('max')})"))
+            await message.reply(
+                f"❌ Пожалуйста, введите числовое значение для {attribute_name} "
+                + f"({attribute_info.get('min')} - {attribute_info.get('max')})",
+                reply_markup=ForceReply(selective=True))
             await state.set_state(retry_action)
             return
 

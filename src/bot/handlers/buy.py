@@ -1,10 +1,11 @@
 import traceback
+from pprint import pprint
 
 import logging
 from decimal import Decimal
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import re
@@ -34,6 +35,7 @@ def _is_valid_token_address(address: str) -> bool:
     try:
         return bool(re.match(MINT_ADDRESS_PATTERN, address))
     except Exception:
+        logger.error(f"Invalid token address: {address}")
         return False
 
 
@@ -48,23 +50,27 @@ def _format_price(amount, format_length=2) -> str:
 
     def to_small_and_normal_digits(number: Decimal, digits=2) -> str:
         """Преобразует число в строку, заменяя нули на маленькие цифры, а остальные на обычные"""
-        int_part, frac_part = str(number).split('.')
-
+        parts = str(number).split('.')
+        int_part = parts[0]
+        frac_part = parts[1] if len(parts) > 1 else ''
         # Считаем количество ведущих нулей в дробной части
         leading_zeros = len(frac_part) - len(frac_part.lstrip('0'))
 
-        # Преобразуем эти нули в маленькие цифры
-        frac_part_small = ''.join(small_digits[digit] for digit in str(leading_zeros if leading_zeros > 0 else ''))
-        # Оставшиеся цифры — обычные
-        frac_part_normal = frac_part[leading_zeros:]
+        # Преобразуем эти нули в маленькие цифры, если больше 6 нулей
+        if leading_zeros > 2:
+            frac_part_small = ''.join(small_digits[digit] for digit in str(leading_zeros))
+        else:
+            frac_part_small = ''.join('0' for _ in range(leading_zeros))
 
-        return f"{int_part}{'.' if frac_part_normal else ''}{frac_part_small if frac_part_normal else ''}{frac_part_normal}"
+        # Оставшиеся цифры — обычные
+        frac_part_normal = frac_part[leading_zeros:(leading_zeros + 5)]
+        return f"{int_part}{'.' if frac_part_normal else ''}{frac_part_small}{frac_part_normal}"
 
     if amount >= 1_000_000:
         return f"{amount / 1_000_000:.{format_length}f}M"
     elif amount >= 1_000:
         return f"{amount / 1_000:.1f}K"
-    elif amount < 0.1:
+    elif amount < 1 and amount != 0:
         return to_small_and_normal_digits(amount, format_length)
     else:
         return f"{amount:.{format_length}f}"
@@ -86,6 +92,54 @@ async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
     except Exception as e:
         logger.error(f"Error in buy button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+
+
+async def get_sol_update_keyboard(state: FSMContext, prefix="buy"):
+    data = await state.get_data()
+    is_limit_order = data.get("is_limit_order", False)
+    chosen_amount = data.get("amount_sol", None)
+    gas_fee = data.get("gas_fee", None)
+    # Формируем клавиатуру
+    keyboard = []
+
+    # Кнопки выбора типа ордера
+    keyboard.append([
+        InlineKeyboardButton(
+            text="🟢 Купить" if not is_limit_order else "⚪️ Купить",
+            callback_data="market_buy"
+        ),
+        InlineKeyboardButton(
+            text="🟢 Лимитный" if is_limit_order else "⚪️ Лимитный",
+            callback_data="limit_buy"
+        )
+    ])
+
+    # Предустановленные суммы
+    keyboard.extend([
+        [
+            InlineKeyboardButton(text=f"{'✅️' if chosen_amount == 0.002 else ''} 0.002 SOL",
+                                 callback_data=f"{prefix}_0.002"),
+            InlineKeyboardButton(text=f"{'✅️' if chosen_amount == 0.005 else ''} 0.005 SOL",
+                                 callback_data=f"{prefix}_0.005"),
+            InlineKeyboardButton(text=f"{'✅️' if chosen_amount == 0.01 else ''} 0.01 SOL",
+                                 callback_data=f"{prefix}_0.01")
+        ],
+        [
+            InlineKeyboardButton(text=f"{'✅️' if chosen_amount == 0.02 else ''} 0.02 SOL",
+                                 callback_data=f"{prefix}_0.02"),
+            InlineKeyboardButton(text=f"{'✅️' if chosen_amount == 0.1 else ''} 0.1 SOL", callback_data=f"{prefix}_0.1"),
+            InlineKeyboardButton(
+                text=f"{'✅️ ' + str(_format_price(chosen_amount)) if chosen_amount and chosen_amount not in [0.002, 0.005, 0.01, 0.02, 0.1] else ''} Custom",
+                callback_data=f"{prefix}_custom")
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"🚀 Gas Fee {': ' + _format_price(gas_fee / 1e9) + ' SOL' if gas_fee else ''}",
+                callback_data=f"{prefix}_set_gas_fee"
+            )
+        ]
+    ])
+    return keyboard
 
 
 @router.message(BuyStates.waiting_for_token, flags={"priority": 3})
@@ -130,6 +184,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         await state.update_data({
             'token_address': token_address,
             'slippage': settings['slippage'] if 'slippage' in settings else 1.0,
+            'gas_fee': settings['gas_fee'] if 'gas_fee' in settings else None,
             'balance': balance,
             'sol_price': sol_price,
             'usd_balance': usd_balance,
@@ -140,30 +195,19 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         slippage = data.get('slippage', 1.0)  # Default to 1% if not set
 
         # Формируем клавиатуру
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            # Тип ордера
-            [
-                InlineKeyboardButton(text="🟢 Купить", callback_data="market_buy"),
-                InlineKeyboardButton(text="⚪️ Лимитный", callback_data="limit_buy")
-            ],
-            # Предустановленные суммы
-            [
-                InlineKeyboardButton(text="0.002 SOL", callback_data="buy_0.002"),
-                InlineKeyboardButton(text="0.005 SOL", callback_data="buy_0.005"),
-                InlineKeyboardButton(text="0.01 SOL", callback_data="buy_0.01")
-            ],
-            [
-                InlineKeyboardButton(text="0.02 SOL", callback_data="buy_0.02"),
-                InlineKeyboardButton(text="0.1 SOL", callback_data="buy_0.1"),
-                InlineKeyboardButton(text="Custom", callback_data="buy_custom")
-            ],
-            # Slippage
+        keyboard = await get_sol_update_keyboard(
+            state=state,
+            prefix="buy"
+        )
+        keyboard.append(
             [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")],
-            # Действия
-            [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")],
+        )
+        keyboard.append(
+            [InlineKeyboardButton(text="💰 Купить", callback_data="confirm_buy")]
+        )
+        keyboard.append(
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-        ])
-
+        )
         # Формируем сообщение
         message_text = (
             f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -180,7 +224,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
 
         await message.answer(
             message_text,
-            reply_markup=keyboard,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
             parse_mode="MARKDOWN",
             disable_web_page_preview=True
         )
@@ -339,6 +383,32 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         await state.clear()
 
 
+async def get_slippage_update_keyboard(state: FSMContext, prefix="buy", back_callback="back_to_buy"):
+    data = await state.get_data()
+    chosen_slippage = float(data.get('slippage', -1))
+    print(data)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"{'✅️' if 0.1 == chosen_slippage else ''} 0.1%",
+                                 callback_data=f"{prefix}_slippage_0.5"),
+            InlineKeyboardButton(text=f"{'✅️' if 1 == chosen_slippage else ''} 1%",
+                                 callback_data=f"{prefix}_slippage_1"),
+            InlineKeyboardButton(text=f"{'✅️' if 2 == chosen_slippage else ''} 2%",
+                                 callback_data=f"{prefix}_slippage_2")
+        ],
+        [
+            InlineKeyboardButton(text=f"{'✅️' if 3 == chosen_slippage else ''} 3%",
+                                 callback_data=f"{prefix}_slippage_3"),
+            InlineKeyboardButton(text=f"{'✅️' if 5 == chosen_slippage else ''} 5%",
+                                 callback_data=f"{prefix}_slippage_5"),
+            InlineKeyboardButton(
+                text=f"{('✅️ ' + str(_format_price(chosen_slippage)) + '%') if chosen_slippage not in [0.1, 1, 2, 3, 5, -1] else ''} Custom",
+                callback_data=f"{prefix}_slippage_custom")
+        ],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)]
+    ])
+
+
 @router.callback_query(lambda c: c.data == "buy_set_slippage", flags={"priority": 10})
 async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle slippage setting button"""
@@ -352,20 +422,11 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
 
         # Save buy context
         await state.update_data(menu_type="buy")
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="0.5%", callback_data="buy_slippage_0.5"),
-                InlineKeyboardButton(text="1%", callback_data="buy_slippage_1"),
-                InlineKeyboardButton(text="2%", callback_data="buy_slippage_2")
-            ],
-            [
-                InlineKeyboardButton(text="3%", callback_data="buy_slippage_3"),
-                InlineKeyboardButton(text="5%", callback_data="buy_slippage_5"),
-                InlineKeyboardButton(text="Custom", callback_data="buy_slippage_custom")
-            ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
-        ])
+        keyboard = await get_slippage_update_keyboard(
+            state=state,
+            prefix="buy",
+            back_callback="back_to_buy"
+        )
 
         await callback_query.message.edit_text(
             "⚙️ Настройка Slippage для покупки\n\n"
@@ -393,13 +454,12 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
         choice = callback_query.data.split("_")[2]  # buy_slippage_X -> X
 
         if choice == "custom":
-            await callback_query.message.edit_text(
+            await callback_query.message.answer(
                 "⚙️ Пользовательский Slippage для покупки\n\n"
                 "Введите значение в процентах (например, 1.5):",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage_buy")]
-                ])
+                reply_markup=ForceReply(selective=True)  # Указываем, что требуется ответ
             )
+            # Устанавливаем состояние для ожидания ввода пользователя
             await state.set_state(BuyStates.waiting_for_slippage)
             return
 
@@ -442,9 +502,55 @@ async def handle_custom_slippage(callback_query: types.CallbackQuery, state: FSM
     except ValueError:
         await callback_query.reply(
             "❌ Неверное значение. Введите число от 0.1 до 100:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage_buy")]
-            ])
+            reply_markup=ForceReply(selective=True)
+        )
+
+
+@router.callback_query(lambda c: c.data.startswith("buy_set_gas_fee"), flags={"priority": 11})
+async def handle_set_gas_fee(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Handle gas fee"""
+    try:
+        await callback_query.message.answer(
+            "⚙️ Пользовательский Gas Fee для покупки\n\n"
+            "Введите значение в SOL (например, 0.01):",
+            reply_markup=ForceReply(selective=True)  # Указываем, что требуется ответ
+        )
+        # Устанавливаем состояние для ожидания ввода пользователя
+        await state.set_state(BuyStates.waiting_for_gas_fee)
+        return
+
+
+    except Exception as e:
+        logger.error(f"Error handling slippage choice: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.message(BuyStates.waiting_for_gas_fee)
+async def handle_custom_gas_fee(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Handle custom slippage input"""
+    try:
+        gas_fee = float(callback_query.text.replace(",", "."))
+        if gas_fee <= 0 or gas_fee > 10:
+            raise ValueError("Invalid gas_fee value")
+        gas_fee *= 1e9
+        user_id = get_real_user_id(callback_query)
+
+        buy_setting = await get_user_setting(user_id, 'buy', session)
+        buy_setting['gas_fee'] = gas_fee
+        await update_user_setting(user_id, 'buy', buy_setting, session)
+        await state.update_data(gas_fee=gas_fee)
+
+        # Отправляем новое сообщение об успешном изменении
+        status_message = await callback_query.answer(f"✅ Gas Fee установлен: {_format_price(gas_fee / 1e9)} SOL")
+
+        # Показываем обновленное меню покупки
+        await show_buy_menu(status_message, state, session, callback_query.from_user.id)
+
+    except ValueError as e:
+        logger.error(f"[BUY] Invalid gas_fee value: {e}")
+        await callback_query.reply(
+            "❌ Неверное значение. Введите число от 0 до 10:",
+            reply_markup=ForceReply(selective=True)
         )
 
 
@@ -470,8 +576,8 @@ async def handle_limit_buy(callback_query: types.CallbackQuery, state: FSMContex
     except Exception as e:
         logger.error(f"Error handling limit buy: {e}")
         await callback_query.answer("❌ Произошла ошибка")
-        
-        
+
+
 @router.callback_query(lambda c: c.data == "market_buy", flags={"priority": 3})
 async def handle_market_buy(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Обработчик для создания лимитного ордера на покупку"""
@@ -489,13 +595,13 @@ async def handle_market_buy(callback_query: types.CallbackQuery, state: FSMConte
 async def show_buy_menu(message: types.Message, state: FSMContext, session: AsyncSession, user_id=None):
     """Показать меню покупки"""
     try:
-        
+
         # Get current data
         user_id = user_id if user_id else message.from_user.id
         settings = await get_user_setting(user_id, 'buy', session)
         data = await state.get_data()
         token_address = data.get("token_address")
-        amount_sol = data.get("amount_sol", 0.1)
+        amount_sol = data.get("amount_sol")
         slippage = settings["slippage"]
         is_limit_order = data.get("is_limit_order", False)
         trigger_price_percent = data.get("trigger_price_percent", 20)
@@ -543,34 +649,10 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         usd_balance = data.get('usd_balance')
 
         # Формируем клавиатуру
-        keyboard = []
-        
-        # Кнопки выбора типа ордера
-        keyboard.append([
-            InlineKeyboardButton(
-                text="🟢 Купить" if not is_limit_order else "⚪️ Купить",
-                callback_data="market_buy"
-            ),
-            InlineKeyboardButton(
-                text="🟢 Лимитный" if is_limit_order else "⚪️ Лимитный",
-                callback_data="limit_buy"
-            )
-        ])
-
-        # Предустановленные суммы
-        keyboard.extend([
-            [
-                InlineKeyboardButton(text="0.002 SOL", callback_data="buy_0.002"),
-                InlineKeyboardButton(text="0.005 SOL", callback_data="buy_0.005"),
-                InlineKeyboardButton(text="0.01 SOL", callback_data="buy_0.01")
-            ],
-            [
-                InlineKeyboardButton(text="0.02 SOL", callback_data="buy_0.02"),
-                InlineKeyboardButton(text="0.1 SOL", callback_data="buy_0.1"),
-                InlineKeyboardButton(text="Custom", callback_data="buy_custom")
-            ]
-        ])
-
+        keyboard = await get_sol_update_keyboard(
+            state=state,
+            prefix='buy'
+        )
         # Настройки
         keyboard.append([InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="buy_set_slippage")])
 
@@ -598,24 +680,25 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
 
         if is_limit_order:
             trigger_price_usd = format(token_info.price_usd * (1 + (trigger_price_percent / 100)), '.6f')
-            addiction = (f"⚙️ Slippage: {slippage}%\n" if slippage else "") + (f"💵 Trigger Price: {trigger_price_percent}% (${_format_price(trigger_price_usd)})\n" if trigger_price_percent else "")
+            addiction = (f"⚙️ Slippage: {slippage}%\n" if slippage else "") + (
+                f"💵 Trigger Price: {trigger_price_percent}% (${_format_price(trigger_price_usd)})\n" if trigger_price_percent else "")
         else:
             addiction = ""
 
         # Формируем сообщение
         message_text = (
-            f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
-            f"📍 Адрес токена:\n`{token_address}`\n\n"
-            f"💰 Баланс кошелька:\n"
-            f"• SOL Balance: {_format_price(balance)} SOL (${usd_balance:.2f})\n\n"
-            + (f"💰 Выбранная сумма: {_format_price(amount_sol)} SOL\n" if amount_sol else "")
-            + addiction
-            + f"\n📊 Информация о токене:\n"
-            + f"• Price: ${_format_price(token_info.price_usd)}\n"
-            + f"• MC: ${_format_price(token_info.market_cap)}\n"
-            + f"• Renounced: {'✔️' if token_info.is_renounced else '✖️'} "
-            + f"Burnt: {'✔️' if token_info.is_burnt else '✖️'}\n\n"
-            + f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
+                f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
+                f"📍 Адрес токена:\n`{token_address}`\n\n"
+                f"💰 Баланс кошелька:\n"
+                f"• SOL Balance: {_format_price(balance)} SOL (${usd_balance:.2f})\n\n"
+                + (f"💰 Выбранная сумма: {_format_price(amount_sol)} SOL\n" if amount_sol else "")
+                + addiction
+                + f"\n📊 Информация о токене:\n"
+                + f"• Price: ${_format_price(token_info.price_usd)}\n"
+                + f"• MC: ${_format_price(token_info.market_cap)}\n"
+                + f"• Renounced: {'✔️' if token_info.is_renounced else '✖️'} "
+                + f"Burnt: {'✔️' if token_info.is_burnt else '✖️'}\n\n"
+                + f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
 
         # Отправляем или редактируем сообщение
@@ -638,21 +721,18 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         )
 
 
-
 @router.callback_query(lambda c: c.data == "set_trigger_price", flags={"priority": 3})
 async def handle_set_trigger_price(callback_query: types.CallbackQuery, state: FSMContext):
     """Обработчик для установки триггерной цены"""
     try:
         await state.set_state(BuyStates.waiting_for_trigger_price)
-        await callback_query.message.edit_text(
+        await callback_query.message.answer(
             "💵 Установка триггерной цены\n\n"
             "Введите процент изменения цены для срабатывания ордера.\n"
             "Например:\n"
             "• 10 - ордер сработает когда цена вырастет на 10%\n"
             "• -5 - ордер сработает когда цена упадет на 5%",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
         return
     except Exception as e:
@@ -678,13 +758,13 @@ async def handle_trigger_price_input(message: types.Message, state: FSMContext, 
 
         # Сохраняем значение в состоянии
         await state.update_data(trigger_price_percent=trigger_price)
-        
+
         # Отправляем сообщение об успешной установке
         status_message = await message.reply(f"✅ Триггерная цена установлена: {trigger_price}%")
-        
+
         # Получаем ID пользователя
         user_id = message.from_user.id
-        
+
         # Показываем обновленное меню покупки
         await show_buy_menu(status_message, state, session, user_id)
 
@@ -696,6 +776,7 @@ async def handle_trigger_price_input(message: types.Message, state: FSMContext, 
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
             ])
         )
+
 
 @router.message(BuyStates.waiting_for_amount)
 async def handle_custom_amount(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
@@ -718,6 +799,7 @@ async def handle_custom_amount(callback_query: types.CallbackQuery, state: FSMCo
             ])
         )
 
+
 @router.callback_query(lambda c: c.data.startswith("buy"))
 async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle preset amount buttons"""
@@ -725,17 +807,15 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
         # Extract amount from callback data
         amount = callback_query.data.split('_')[1]
         if amount == "custom":
-            await callback_query.message.edit_text(
+            await callback_query.message.answer(
                 "⚙️ Количество для покупки\n\n"
                 "Введите значение (например, 1.23):",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_buy")]
-                ])
+                reply_markup=ForceReply(selective=True)
             )
             await state.set_state(BuyStates.waiting_for_amount)
             return
         amount = float(amount)
-        prev_amount = await state.get_value('amount_sol', 0.1)
+        prev_amount = await state.get_value('amount_sol', -1)
         if amount == float(prev_amount):
             return
         print(prev_amount, amount)
@@ -746,7 +826,7 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
     except Exception as e:
         logger.error(f"Error handling preset amount: {e}")
         await callback_query.answer("❌ Произошла ошибка")
-        
+
 
 @router.callback_query(F.data == "auto_buy_settings", flags={"priority": 3})
 async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuery], session: AsyncSession):
@@ -773,18 +853,7 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
             return
 
         settings = await get_user_setting(user_id, 'auto_buy', session)
-        print("INFO: 1")
-        # settings = await session.scalar(
-        #     select(AutoBuySettings).where(AutoBuySettings.user_id == user.id)
-        # )
 
-        # if not settings:
-        #     Создаем настройки по умолчанию
-        # settings = AutoBuySettings(user_id=user.id)
-        # session.add(settings)
-        # await session.commit()
-
-        # Формируем клавиатуру
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"{'🟢' if settings['enabled'] else '🔴'} Автобай",
@@ -828,7 +897,6 @@ async def toggle_auto_buy(callback: types.CallbackQuery, session: AsyncSession):
     try:
         user_id = get_real_user_id(callback)
         settings = await get_user_setting(user_id, 'auto_buy', session)
-        print("INFO: 2")
         settings['enabled'] = not settings['enabled']
         await update_user_setting(user_id, 'auto_buy', settings, session)
         await show_auto_buy_settings(callback, session)
@@ -875,7 +943,6 @@ async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext
             return
         user_id = get_real_user_id(message)
         settings = await get_user_setting(user_id, 'auto_buy', session)
-        print("INFO: 3")
         settings['amount_sol'] = amount
         await update_user_setting(user_id, 'auto_buy', settings, session)
 
@@ -897,15 +964,11 @@ async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext
 async def handle_set_auto_buy_slippage(callback: types.CallbackQuery, state: FSMContext):
     """Установка slippage для автобая"""
     try:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="0.5%", callback_data="auto_buy_slippage_0.5"),
-                InlineKeyboardButton(text="1%", callback_data="auto_buy_slippage_1"),
-                InlineKeyboardButton(text="2%", callback_data="auto_buy_slippage_2")
-            ],
-            [InlineKeyboardButton(text="Ввести вручную", callback_data="auto_buy_slippage_custom")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="auto_buy_settings")]
-        ])
+        keyboard = await get_slippage_update_keyboard(
+            state=state,
+            prefix="auto_buy",
+            back_callback="auto_buy_settings"
+        )
 
         await callback.message.edit_text(
             "⚙️ Выберите slippage для автопокупки:",
@@ -938,7 +1001,6 @@ async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: 
         print(slippage)
         user_id = get_real_user_id(callback)
         settings = await get_user_setting(user_id, 'auto_buy', session)
-        print("INFO: 4")
         settings['slippage'] = slippage
         await update_user_setting(user_id, 'auto_buy', settings, session)
         await show_auto_buy_settings(callback, session)
@@ -969,7 +1031,6 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
         slippage = float(slippage)
         user_id = get_real_user_id(message)
         settings = await get_user_setting(user_id, 'auto_buy', session)
-        print("INFO: 5")
         settings['slippage'] = slippage
         await update_user_setting(user_id, 'auto_buy', settings, session)
         await state.clear()
@@ -992,13 +1053,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
     try:
         user_id = get_real_user_id(message)
         auto_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
-        print("INFO: 7")
         # Если автобай выключен или настройки не найдены, пропускаем
-
-        # Проверяем текущее состояние пользователя
-        current_state = await state.get_state()
-        if current_state is not None:
-            return
 
         # Проверяем, является ли сообщение mint адресом
         token_address = message.text.strip()
@@ -1111,12 +1166,12 @@ async def show_limit_orders(callback_query: types.CallbackQuery, session: AsyncS
     """Показать список активных лимитных ордеров"""
     try:
         user_id = get_real_user_id(callback_query)
-        
+
         # Получаем пользователя
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
-        
+
         if not user:
             await callback_query.answer("❌ Пользователь не найден")
             return
@@ -1228,6 +1283,3 @@ async def cancel_limit_order(callback_query: types.CallbackQuery, session: Async
     except Exception as e:
         logger.error(f"Error cancelling limit order: {e}")
         await callback_query.answer("❌ Произошла ошибка при отмене ордера")
-
-
-
