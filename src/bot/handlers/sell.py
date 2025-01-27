@@ -9,6 +9,7 @@ from solders.pubkey import Pubkey
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
 from src.database.models import User
+from .buy import _format_price
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
@@ -34,15 +35,6 @@ def _is_valid_token_address(address: str) -> bool:
     except Exception:
         return False
 
-
-def _format_price(amount: float) -> str:
-    """Форматирует цену в читаемый вид"""
-    if amount >= 1_000_000:
-        return f"{amount / 1_000_000:.2f}M"
-    elif amount >= 1_000:
-        return f"{amount / 1_000:.1f}K"
-    else:
-        return f"{amount:.2f}"
 
 
 @router.callback_query(F.data == "sell", flags={"priority": 3})
@@ -177,7 +169,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
 
         # Формируем клавиатуру
         user_id = get_real_user_id(message)
-        stmt = select(User.last_buy_amount).where(User.id == user_id)
+        stmt = select(User.last_buy_amount).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         last_buy_amount = result.scalar()
 
@@ -191,8 +183,8 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
-            f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
-            f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
+            f"• Renounced: {'✅️' if token_info.is_renounced else '✗'} "
+            f"Burnt: {'✅️' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
 
@@ -306,8 +298,8 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             await status_message.edit_text(
                 "✅ Токен успешно продан!\n\n"
                 f"💰 Продано: {amount_tokens:.6f} токенов ({sell_type})\n"
-                f"💵 Цена: {current_price_sol:.6f} SOL\n"
-                f"💰 Получено: {(amount_tokens * current_price_sol):.4f} SOL\n"
+                f"💵 Цена: {_format_price(current_price_sol)} SOL\n"
+                f"💰 Получено: {_format_price(amount_tokens * current_price_sol)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
                 disable_web_page_preview=True,
@@ -476,8 +468,8 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
-            f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
-            f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
+            f"• Renounced: {'✅️' if token_info.is_renounced else '✗'} "
+            f"Burnt: {'✅️' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
 
@@ -528,8 +520,8 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
-            f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
-            f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
+            f"• Renounced: {'✅️' if token_info.is_renounced else '✗'} "
+            f"Burnt: {'✅️' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
 
@@ -635,13 +627,13 @@ def get_sell_keyboard_list(
             chosen = True
         row.append(
             InlineKeyboardButton(
-                text=f"✓ {val}%" if sell_percentage == val else f"{val}%",
+                text=f"✅️ {val}%" if sell_percentage == val else f"{val}%",
                 callback_data=f"sell_{val}"
             )
         )
     if row:
         buttons.append(row)
 
-    buttons[-1].append(InlineKeyboardButton(text=f"{'' if chosen else '✓' } Custom", callback_data="sell_custom"))
+    buttons[-1].append(InlineKeyboardButton(text=f"{'' if chosen else '✅️' } Custom", callback_data="sell_custom"))
 
     return InlineKeyboardMarkup(inline_keyboard=first_row + buttons + last_row)

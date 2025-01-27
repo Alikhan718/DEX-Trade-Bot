@@ -96,27 +96,50 @@ class RateLimiter:
 
 
 # Инициализация RateLimiter: например, max 3 вызова в секунду
-rate_limiter = RateLimiter(max_calls=3, period=1.0)
+rate_limiter = RateLimiter(max_calls=1, period=1.0)  # More conservative rate limit
 
+# Добавляем глобальный rate limiter для всех клиентов
+global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
 
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
-    await rate_limiter.acquire()
-    return await request_func(*args, **kwargs)
-
+    """Send request with both per-client and global rate limiting"""
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await rate_limiter.acquire()
+            await global_rate_limiter.acquire()
+            return await request_func(*args, **kwargs)
+        except Exception as e:
+            if not is_rate_limit_error(e) or attempt == max_retries - 1:
+                raise
+            
+            # Exponential backoff
+            delay = base_delay * (2 ** attempt)
+            logger.info(f"Rate limit hit, retrying in {delay:.2f} seconds...")
+            await asyncio.sleep(delay)
+    
+    raise Exception("Failed after max retries")
 
 def is_rate_limit_error(exception):
-    """
-    Функция-предикат для проверки, является ли исключение ошибкой HTTP 429.
-    """
-    return (
-            isinstance(exception, httpx.HTTPStatusError) and
-            exception.response.status_code == 429
-    )
-
+    """Check if the exception is a rate limit error"""
+    if isinstance(exception, httpx.HTTPStatusError):
+        return exception.response.status_code == 429
+    # Also check for RPC node specific rate limit errors
+    if isinstance(exception, Exception):
+        error_msg = str(exception).lower()
+        return any(msg in error_msg for msg in [
+            "rate limit exceeded",
+            "too many requests",
+            "please slow down",
+            "429"
+        ])
+    return False
 
 class SolanaClient:
     def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
-        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://solana-mainnet.core.chainstack.com/1477348d5255a5a82def1ba221b5a610")
         self.compute_unit_price = compute_unit_price
         self.client = AsyncClient(self.rpc_endpoint)
         self._private_key = private_key
@@ -198,7 +221,7 @@ class SolanaClient:
                 owner=self.payer.pubkey(),
                 mint=mint
             )
-            compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
+            compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
             tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
             tx_ata.recent_blockhash = (
                 await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
@@ -395,7 +418,7 @@ class SolanaClient:
             raise ValueError("Invalid reserves state")
 
         price = (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (
-                    curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
+                curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
         logger.info(f"Calculated token price: {price:.10f} SOL")
         return price
 
@@ -479,7 +502,7 @@ class SolanaClient:
 
                 recent_blockhash = await self.client.get_latest_blockhash()
                 transaction = Transaction()
-                transaction.add(sell_ix).add(set_compute_unit_price(self.compute_unit_price))
+                transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price)))
                 transaction.recent_blockhash = recent_blockhash.value.blockhash
                 transaction.fee_payer = self.payer.pubkey()
                 transaction.sign(self.payer)
@@ -686,13 +709,14 @@ class SolanaClient:
                 # logger.info(f"[CLIENT] Extracted token address: {token_address}")
 
                 for account_key in tx_info.value.transaction.transaction.message.account_keys:
-                    logger.info(f"[CLIENT] Account key: {account_key}")
+                    #logger.info(f"[CLIENT] Account key: {account_key}")
                     if check_mint(account_key):
                         token_address = account_key
                         logger.info(f"[CLIENT] Found token address: {token_address}")
                         break
                     else:
-                        logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+                        #logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+                        pass
 
             # Convert to dict before JSON serialization
             tx_info_dict = {

@@ -6,6 +6,7 @@ class BuyStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_slippage = State()
     waiting_for_trigger_price = State()
+    waiting_for_gas_fee = State()
 
 
 class SellStates(StatesGroup):

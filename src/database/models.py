@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Float, DateTime, Text
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Float, DateTime, Text, BigInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from .database import Base
@@ -46,7 +46,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, index=True)
+    telegram_id = Column(BigInteger, unique=True, index=True)
     solana_wallet = Column(String(44), unique=True, index=True)  # Base58 Solana address is 44 chars
     _private_key = Column("private_key", Text)  # Encrypted private key
     referral_code = Column(String(8), unique=True, index=True)
@@ -180,7 +180,7 @@ class CopyTrade(Base):
     __tablename__ = "copy_trades"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
+    user_id = Column(BigInteger, ForeignKey('users.id'))
     name = Column(String, nullable=False)
     wallet_address = Column(String(44), nullable=False)
     is_active = Column(Boolean, default=True)

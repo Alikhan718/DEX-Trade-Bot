@@ -33,12 +33,11 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     # Trading features
     [
         InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
-        InlineKeyboardButton(text="🧠 Smart Wallet", callback_data="smart_money")
+        InlineKeyboardButton(text="🧠 Smart Money", callback_data="smart_money")
     ],
     # Orders and positions
     [
         InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
-        InlineKeyboardButton(text="📈 Открытые Позиции", callback_data="open_positions")
     ],
     # Security and wallet
     [
@@ -52,77 +51,92 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     ],
     # Referral
     [
-        InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral")
+        InlineKeyboardButton(text="👥 Реферальная Система", callback_data="referral_menu")
     ]
 ])
 
 # Высший приоритет - базовые команды
 @router.message(CommandStart(), flags={"priority": 1})
 async def show_main_menu(message: types.Message, session: AsyncSession, solana_service: SolanaService):
-    """Главное меню - самый высокий приоритет"""
+    """Главное меню с обработкой реферального кода"""
     try:
-        # Get real user ID
+        # Получаем ID пользователя
         user_id = get_real_user_id(message)
         logger.info(f"Processing start command for user ID: {user_id}")
 
-        # Try to find user by any possible ID
+        # Извлекаем реферальный код из команды (если есть)
+        args = message.text.split()
+        referral_code = args[1] if len(args) > 1 else None
+        logger.info(f"Referral code: {referral_code}")
+
+        # Пытаемся найти пользователя по ID
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
 
-        if not user:
-            # Also check the alternative ID format
-            alt_id = int(str(user_id).replace("bot", ""))
-            stmt = select(User).where(User.telegram_id == alt_id)
-            result = await session.execute(stmt)
-            user = result.unique().scalar_one_or_none()
-
-            if user:
-                # Update the ID to the current one
-                logger.info(f"Updating user ID from {user.telegram_id} to {user_id}")
-                user.telegram_id = user_id
-                await session.commit()
-
-        if not user:
-            # Generate new Solana wallet for new user
+        # Если пользователь с таким ID уже существует
+        if user:
+            # Обновляем время последней активности
+            user.last_activity = datetime.now()
+            await session.commit()
+        else:
+            # Генерируем новый Solana-кошелек
             new_keypair = Keypair()
-            # Store private key as a list of integers
-            private_key = list(bytes(new_keypair))
+            private_key = list(bytes(new_keypair))  # Приватный ключ как список чисел
 
+            # Поиск владельца реферального кода (если он передан)
+            referrer = None
+            if referral_code:
+                referral_code = referral_code.replace("code_", "")
+                referrer_stmt = select(User).where(User.referral_code == referral_code)
+                referrer_result = await session.execute(referrer_stmt)
+                referrer = referrer_result.unique().scalar_one_or_none()
+
+            # Создаём нового пользователя
             user = User(
                 telegram_id=user_id,
                 solana_wallet=str(new_keypair.pubkey()),
-                private_key=str(private_key),  # Store as string representation of the array
-                referral_code=str(uuid.uuid4())[:8],
+                private_key=str(private_key),
+                referral_code=str(uuid.uuid4())[:8],  # Генерация нового реферального кода
                 total_volume=0.0,
+                referral_id=referrer.id if referrer else None,  # Указываем владельца кода
                 created_at=datetime.now(),
                 last_activity=datetime.now()
             )
             session.add(user)
             await session.commit()
-            logger.info(f"Created new wallet for user {user_id}: {user.solana_wallet}")
+            # Отправляем сообщение владельцу реферала о новом пользователе
+            if referrer:
+                try:
+                    message_text = f"🎉 Новый реферал присоединился с вашим кодом!"  # Используем ID нового пользователя
+                    await message.bot.send_message(referrer.telegram_id, message_text)  # Используем message.bot, если bot не определён глобально
+                except Exception as e:
+                    logger.error(f"Error sending referral notification to {referrer.telegram_id}: {e}")
 
-            # Send welcome message for new users
+            logger.info(f"Created new user with wallet {user.solana_wallet} and referrer {referrer.id if referrer else 'None'}")
+
+            # Отправляем приветственное сообщение
             await message.answer(
                 "🎉 Добро пожаловать! Для вас создан новый Solana кошелек:\n\n"
                 f"Адрес: <code>{user.solana_wallet}</code>\n\n"
                 "⚠️ ВАЖНО: Храните приватный ключ в безопасном месте!\n"
                 "Никогда не делитесь им ни с кем.\n"
-                "Используйте кнопку «Показать приватный ключ» чтобы увидеть его.",
+                "Используйте кнопку «Показать приватный ключ», чтобы увидеть его.",
                 parse_mode="HTML"
             )
 
-        # Update last activity
-        user.last_activity = datetime.now()
-        await session.commit()
-
-        # Get wallet balance and SOL price
+        # Получаем баланс и цену SOL
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
+
+        # Создаём настройки пользователя (если нужно)
         await create_initial_user_settings(user_id, session)
+
+        # Отправляем главное меню
+        from src.bot.handlers.buy import _format_price
         await message.answer(
-            f"💳 Баланс кошелька: {balance:.4f} SOL (${usd_balance:.2f})\n"
+            f"💳 Баланс кошелька: {_format_price(balance)} SOL (${_format_price(usd_balance)})\n"
             f"💳 Адрес: <code>{user.solana_wallet}</code>\n\n"
             "Выберите действие:",
             reply_markup=main_menu_keyboard,
@@ -130,7 +144,7 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         )
 
     except Exception as e:
-        logger.error(f"Error showing main menu: {e}")
+        logger.error(f"Error in start command: {e}")
         traceback.print_exc()
 
         await message.answer(
