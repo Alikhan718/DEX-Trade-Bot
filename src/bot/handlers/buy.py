@@ -48,26 +48,31 @@ def _format_price(amount, format_length=2) -> str:
 
     def to_small_and_normal_digits(number: Decimal, digits=2) -> str:
         """Преобразует число в строку, заменяя нули на маленькие цифры, а остальные на обычные"""
-        int_part, frac_part = str(number).split('.')
-
+        parts = str(number).split('.')
+        int_part = parts[0]
+        frac_part = parts[1] if len(parts) > 1 else ''
         # Считаем количество ведущих нулей в дробной части
         leading_zeros = len(frac_part) - len(frac_part.lstrip('0'))
 
-        # Преобразуем эти нули в маленькие цифры
-        frac_part_small = ''.join(small_digits[digit] for digit in str(leading_zeros))
-        # Оставшиеся цифры — обычные
-        frac_part_normal = frac_part[leading_zeros:]
+        # Преобразуем эти нули в маленькие цифры, если больше 6 нулей
+        if leading_zeros > 2:
+            frac_part_small = ''.join(small_digits[digit] for digit in str(leading_zeros))
+        else:
+            frac_part_small = ''.join('0' for _ in range(leading_zeros))
 
-        return f"{int_part}.{frac_part_small}{frac_part_normal}"
+        # Оставшиеся цифры — обычные
+        frac_part_normal = frac_part[leading_zeros:(leading_zeros + 5)]
+        return f"{int_part}{'.' if frac_part_normal else ''}{frac_part_small}{frac_part_normal}"
 
     if amount >= 1_000_000:
         return f"{amount / 1_000_000:.{format_length}f}M"
     elif amount >= 1_000:
         return f"{amount / 1_000:.1f}K"
-    elif amount < 0.1:
+    elif amount < 1 and amount != 0:
         return to_small_and_normal_digits(amount, format_length)
     else:
         return f"{amount:.{format_length}f}"
+
 
 
 @router.callback_query(F.data == "buy", flags={"priority": 3})

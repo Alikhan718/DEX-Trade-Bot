@@ -30,6 +30,7 @@ from tenacity import (
 )
 
 from dotenv import load_dotenv
+import requests
 
 import httpx  # Используется в обработке исключений
 
@@ -836,6 +837,34 @@ class SolanaClient:
             logger.error(f"Failed to send transfer transaction: {e}")
             logger.error(traceback.format_exc())
             return None
+        
+    async def token_info(self, mint: str):
+        params = {
+            "keyword": mint,
+            "all": "false"
+        }
+
+        timestamp = int(time.time())
+        user_agent = f"Custom/{timestamp}"
+
+        # Заголовки запроса
+        headers = {
+            "User-Agent": user_agent
+        }
+
+        try:
+            # Выполнение GET-запроса
+            response = requests.get(url, params=params, headers=headers)
+            
+            # Проверка успешности запроса
+            if response.status_code == 200:
+                # Вывод данных в формате JSON
+                data = response.json()
+                return data['data']['pairs'][0]
+            else:
+                print(f"Ошибка: {response.status_code}, {response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"Произошла ошибка при выполнении запроса: {e}")
 
 
 def check_mint(account: Pubkey) -> bool:
@@ -883,3 +912,5 @@ def check_mint(account: Pubkey) -> bool:
     except Exception as e:
         logger.error(f"[CLIENT] Error in check_mint: {str(e)}")
         return False
+      
+
