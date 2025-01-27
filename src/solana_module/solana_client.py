@@ -778,10 +778,6 @@ class SolanaClient:
             logger.error(f"[CLIENT] Traceback: {traceback.format_exc()}")
             return 0
         
-    async def get_tokens(self, wallet_address) -> float:
-        #sewallet_address = Pubkey.from_string(wallet_address)
-        print(await self.client.get_account_info(wallet_address))
-        
     async def send_transfer_transaction(
         self,
         recipient_address: str,
