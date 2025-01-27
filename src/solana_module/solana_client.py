@@ -55,6 +55,7 @@ load_dotenv()
 EXPECTED_DISCRIMINATOR = struct.pack("<Q", 6966180631402821399)
 TOKEN_DECIMALS = 6
 LAMPORTS_PER_SOL = 1_000_000_000
+url = "https://api.coinmarketcap.com/dexer/v3/dexer/search/main-site"
 
 
 class BondingCurveState:
@@ -865,6 +866,21 @@ class SolanaClient:
                 print(f"Ошибка: {response.status_code}, {response.text}")
         except requests.exceptions.RequestException as e:
             print(f"Произошла ошибка при выполнении запроса: {e}")
+        
+    async def get_tokens(self, wallet_address) -> float:
+        token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
+        mints = []
+        for token_account in token_accounts:
+            last = (await self.client.get_signatures_for_address(token_account)).value[0]
+            print(f"Last signature: {last}")
+            transaction_info = await self.get_transaction(last.signature)
+            if transaction_info is not None:
+                print(f'Mint address: {transaction_info['token_address']}')
+                mints.append(transaction_info['token_address'])
+            else:
+                print(f"Failed to get transaction info for signature: {last}")
+        return mints
+                
 
 
 def check_mint(account: Pubkey) -> bool:
@@ -912,5 +928,6 @@ def check_mint(account: Pubkey) -> bool:
     except Exception as e:
         logger.error(f"[CLIENT] Error in check_mint: {str(e)}")
         return False
-      
+
+
 

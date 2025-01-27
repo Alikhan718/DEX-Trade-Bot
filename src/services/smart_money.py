@@ -158,7 +158,8 @@ class SmartMoneyTracker:
                         accounts.append({'address': account.address, 'balance': float(account.amount.ui_amount) * ti, 'transactions': tx_count, 'roi': avg_roi})
         except Exception as e:
             print(f"An error occurred: {e}")
-        return accounts
+        self.client.close()
+        return sorted(accounts, key=lambda x: x['roi'], reverse=True)
     
 
 async def account_info():
