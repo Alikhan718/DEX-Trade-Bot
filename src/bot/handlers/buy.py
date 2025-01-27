@@ -1046,7 +1046,7 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
         await state.clear()
 
 
-@router.message(F.state.is_(None), flags={"allow_next": True})
+@router.message(flags={"allow_next": True})
 async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession,
                           solana_service: SolanaService):
     """Автоматическая покупка при получении mint адреса"""
