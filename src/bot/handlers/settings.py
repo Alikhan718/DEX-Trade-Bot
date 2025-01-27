@@ -99,8 +99,6 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
             buttonRows += buy_settings_keyboard
         if len(sell_settings_keyboard):
             buttonRows += sell_settings_keyboard
-        print("BUTTONS")
-        pprint(buttonRows)
         buttonRows = [[btn] for btn in buttonRows]
         # buttonRows.append(row)
 

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import F
 
 from src.bot.crud import create_initial_user_settings
+
 from src.database.models import User
 from src.services.solana_service import SolanaService
 from src.bot.utils.user import get_real_user_id
@@ -211,9 +212,9 @@ async def back_to_main_menu(callback_query: types.CallbackQuery, session: AsyncS
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
-
+        from src.bot.handlers.buy import _format_price
         await callback_query.message.edit_text(
-            f"💳 Баланс кошелька: {balance:.4f} SOL (${usd_balance:.2f})\n"
+            f"💳 Баланс кошелька: {_format_price(balance)} SOL (${_format_price(usd_balance)})\n"
             f"💳 Адрес: <code>{user.solana_wallet}</code>\n\n"
             "Выберите действие:",
             reply_markup=main_menu_keyboard,

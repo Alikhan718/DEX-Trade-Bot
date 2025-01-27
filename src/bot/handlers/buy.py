@@ -81,13 +81,11 @@ def _format_price(amount, format_length=2) -> str:
 async def on_buy_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Обработчик нажатия кнопки Купить в главном меню"""
     try:
-        await callback_query.message.edit_text(
+        await callback_query.message.answer(
             "🔍 Введите адрес токена, который хотите купить:\n"
             "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
             parse_mode="MARKDOWN",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
         await state.set_state(BuyStates.waiting_for_token)
     except Exception as e:
@@ -214,7 +212,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
             f"💰 Баланс кошелька:\n"
-            f"• SOL Balance: {_format_price(balance)} SOL (${usd_balance:.2f})\n\n"
+            f"• SOL Balance: {_format_price(balance)} SOL (${_format_price(usd_balance)})\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
@@ -522,7 +520,7 @@ async def handle_set_gas_fee(callback_query: types.CallbackQuery, state: FSMCont
 
 
     except Exception as e:
-        logger.error(f"Error handling slippage choice: {e}")
+        logger.error(f"Error handling gas_fee: {e}")
         await callback_query.answer("❌ Произошла ошибка")
 
 
@@ -691,7 +689,7 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
                 f"💲{token_info.symbol} 📈 - {token_info.name}\n\n"
                 f"📍 Адрес токена:\n`{token_address}`\n\n"
                 f"💰 Баланс кошелька:\n"
-                f"• SOL Balance: {_format_price(balance)} SOL (${usd_balance:.2f})\n\n"
+                f"• SOL Balance: {_format_price(balance)} SOL (${_format_price(usd_balance)})\n\n"
                 + (f"💰 Выбранная сумма: {_format_price(amount_sol)} SOL\n" if amount_sol else "")
                 + addiction
                 + f"\n📊 Информация о токене:\n"
@@ -1047,11 +1045,12 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
         await state.clear()
 
 
-@router.message(flags={"allow_next": True})
+@router.message(F.text.regexp(r"^mint_[a-zA-Z0-9]{32}$"))
 async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession,
                           solana_service: SolanaService):
     """Автоматическая покупка при получении mint адреса"""
     try:
+        logger.info('Handler: AUTO-BUY start')
         user_id = get_real_user_id(message)
         auto_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
         # Если автобай выключен или настройки не найдены, пропускаем
