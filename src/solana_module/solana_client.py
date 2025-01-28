@@ -895,8 +895,9 @@ class SolanaClient:
             print(f"Last signature: {last}")
             transaction_info = await self.get_transaction(last.signature)
             if transaction_info is not None:
-                print(f'Mint address: {transaction_info['token_address']}')
-                mints.append(transaction_info['token_address'])
+                mint = transaction_info.get('token_address')
+                ti = await self.token_info(mint)
+                mints.append((mint, ti.get('marketCap'), ti.get('baseToken')['name'], ti.get('baseToken')['symbol']))
             else:
                 print(f"Failed to get transaction info for signature: {last}")
         return mints
@@ -948,6 +949,3 @@ def check_mint(account: Pubkey) -> bool:
     except Exception as e:
         logger.error(f"[CLIENT] Error in check_mint: {str(e)}")
         return False
-
-
-

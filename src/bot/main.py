@@ -107,12 +107,12 @@ class SolanaDEXBot:
         try:
             # Initialize limit orders service
             logger.info("Starting limit orders monitoring...")
-            self.limit_orders_service = AsyncLimitOrders(self.Session)
+            self.limit_orders_service = AsyncLimitOrders(self.Session, self)
             await self.limit_orders_service.start()
             
             # Start monitoring in background
             self.limit_orders_task = asyncio.create_task(
-                self.limit_orders_service.check_and_execute_orders()
+                self.limit_orders_service.monitor_prices(interval=15)
             )
 
             # Start copy trade service

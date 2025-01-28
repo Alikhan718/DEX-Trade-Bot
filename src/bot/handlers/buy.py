@@ -20,6 +20,8 @@ from src.bot.states import BuyStates, AutoBuySettingsStates
 from solders.pubkey import Pubkey
 from src.solana_module.utils import get_bonding_curve_address
 from ..crud import get_user_setting, update_user_setting
+#from bot import bot
+
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +300,8 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             )
             session.add(limit_order)
             await session.commit()
-
+    
+            
             # Send confirmation message
             await callback_query.message.edit_text(
                 "✅ Лимитный ордер создан!\n\n"
@@ -1045,7 +1048,7 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
         await state.clear()
 
 
-@router.message(F.text.regexp(r"^mint_[a-zA-Z0-9]{32}$"))
+@router.message()
 async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession,
                           solana_service: SolanaService):
     """Автоматическая покупка при получении mint адреса"""
@@ -1070,6 +1073,10 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
 
         if not user:
             logger.warning(f"User not found for auto-buy: {user_id}")
+            return
+        
+        if not (await get_user_setting(user_id, 'auto_buy', session))['enabled']:
+            logger.warning(f"User not enabled: {user_id}")
             return
 
         # Получаем баланс кошелька для проверки
@@ -1283,3 +1290,7 @@ async def cancel_limit_order(callback_query: types.CallbackQuery, session: Async
     except Exception as e:
         logger.error(f"Error cancelling limit order: {e}")
         await callback_query.answer("❌ Произошла ошибка при отмене ордера")
+
+
+
+    
