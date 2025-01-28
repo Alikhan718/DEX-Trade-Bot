@@ -7,7 +7,7 @@ import uuid
 
 from aiogram import Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -163,16 +163,13 @@ async def delete_message_after_delay(message: types.Message, delay: int):
 async def on_import_wallet_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Handle import wallet button press"""
     try:
-        await callback_query.message.edit_text(
+        await callback_query.message.answer(
             "🔑 Импорт кошелька\n\n"
             "Отправьте приватный ключ в формате массива чисел.\n"
             "Например: 124,232,72,36,252,17,98,94,...\n\n"
             "⚠️ ВНИМАНИЕ: Никогда не делитесь своим приватным ключом!\n"
             "Импортируйте кошелек только из надежных источников.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="wallet_menu")]
-            ]),
-            parse_mode="HTML"
+            reply_markup=ForceReply(selective=True)
         )
         await state.set_state(WalletStates.waiting_for_private_key)
     except Exception as e:

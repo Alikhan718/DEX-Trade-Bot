@@ -32,6 +32,3 @@ def token_info(mint):
             print(f"Ошибка: {response.status_code}, {response.text}")
     except requests.exceptions.RequestException as e:
         print(f"Произошла ошибка при выполнении запроса: {e}")
-
-
-print(token_info("4q9fJRXnGLNJiavjaySmvrg9gkFaGW77Ci19x29dpump"))

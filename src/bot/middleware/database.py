@@ -1,3 +1,4 @@
+import traceback
 from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
@@ -25,6 +26,7 @@ class DatabaseMiddleware(BaseMiddleware):
                 await session.commit()
                 return result
             except Exception as e:
+                traceback.print_exc()
                 logger.error(f"Error in database middleware: {e}")
                 await session.rollback()
             finally:

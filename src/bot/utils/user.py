@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 def get_real_user_id(event: types.Message | CallbackQuery | types.Update) -> int:
     """Get real user ID from any event type"""
-    logger.info(f"Getting real user ID from event type: {type(event)}")
+    # logger.info(f"Getting real user ID from event type: {type(event)}")
 
     # If it's a callback query
     if isinstance(event, CallbackQuery):

@@ -5,7 +5,7 @@ from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 import asyncio
 from aiogram import F
 
@@ -40,14 +40,12 @@ def _is_valid_token_address(address: str) -> bool:
 async def on_smart_money_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Обработчик нажатия кнопки Smart Money"""
     try:
-        await callback_query.message.edit_text(
+        await callback_query.message.answer(
             "🧠 Smart Money Анализ\n\n"
             "Отправьте адрес токена для анализа.\n"
             "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
             parse_mode="MARKDOWN",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
         await state.set_state(SmartMoneyStates.waiting_for_token)
     except Exception as e:

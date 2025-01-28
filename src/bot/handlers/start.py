@@ -68,7 +68,7 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         # Извлекаем реферальный код из команды (если есть)
         args = message.text.split()
         referral_code = args[1] if len(args) > 1 else None
-        logger.info(f"Referral code: {referral_code}")
+        # logger.info(f"Referral code: {referral_code}")
 
         # Пытаемся найти пользователя по ID
         stmt = select(User).where(User.telegram_id == user_id)

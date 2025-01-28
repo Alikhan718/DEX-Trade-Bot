@@ -2,7 +2,7 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from aiogram import F
 
 from src.services.rugcheck import RugCheckService
@@ -28,12 +28,10 @@ def _is_valid_token_address(address: str) -> bool:
 async def on_rugcheck_button(callback_query: types.CallbackQuery, state: FSMContext):
     """Обработчик нажатия кнопки Проверка на скам"""
     try:
-        await callback_query.message.edit_text(
+        await callback_query.message.answer(
             "🔍 Введите адрес токена для проверки на скам:",
             parse_mode="MARKDOWN",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
         await state.set_state(RugCheckStates.waiting_for_token)
     except Exception as e:

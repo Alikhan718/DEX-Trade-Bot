@@ -88,7 +88,7 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
         await state.set_state(SellStates.waiting_for_token)
 
     except Exception as e:
-        print(traceback.format_exc())
+        traceback.format_exc()
         logger.error(f"Error in sell button handler: {e}")
         traceback.print_exc()
         await callback_query.message.edit_text(
@@ -155,7 +155,6 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
 
         try:
             sell_settings = await get_user_setting(user_id, 'sell', session)
-            print(sell_settings)
             tx_handler = UserTransactionHandler(user.private_key, sell_settings['gas_fee'])
             token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
             token_balance_decimal = float(token_balance) if token_balance else 0.0
@@ -465,7 +464,6 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
     try:
         # Extract percentage from callback data
         sell_type = callback_query.data.split("_", 1)[1]
-        print(sell_type)
 
         if sell_type == "initial":
             # Save special type to state

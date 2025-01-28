@@ -388,7 +388,6 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
 async def get_slippage_update_keyboard(state: FSMContext, prefix="buy", back_callback="back_to_buy"):
     data = await state.get_data()
     chosen_slippage = float(data.get('slippage', -1))
-    print(data)
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=f"{'✅️' if 0.1 == chosen_slippage else ''} 0.1%",
@@ -820,7 +819,6 @@ async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMCo
         prev_amount = await state.get_value('amount_sol', -1)
         if amount == float(prev_amount):
             return
-        print(prev_amount, amount)
         await state.update_data(amount_sol=amount)
 
         await show_buy_menu(callback_query.message, state, session, callback_query.from_user.id)
@@ -1285,7 +1283,6 @@ async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: 
 
         # Если выбрано предустановленное значение
         slippage = float(choice)
-        print(slippage)
         user_id = get_real_user_id(callback)
         settings = await get_user_setting(user_id, 'auto_buy', session)
         settings['slippage'] = slippage

@@ -181,7 +181,7 @@ class CopyTrade(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger, ForeignKey('users.id'))
-    name = Column(String, nullable=False)
+    name = Column(String, nullable=True)
     wallet_address = Column(String(44), nullable=False)
     is_active = Column(Boolean, default=True)
 

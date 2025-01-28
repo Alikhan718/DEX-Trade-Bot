@@ -1,11 +1,14 @@
 import logging
+import traceback
+from pprint import pprint
+from aiogram import types
 from aiogram import Router, F
-from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.bot.handlers.buy import _format_price
 from src.database.models import CopyTrade, ExcludedToken, User
 from src.bot.services.copy_trade_service import CopyTradeService
 from src.bot.states import CopyTradeStates
@@ -41,7 +44,7 @@ async def show_copy_trade_menu(callback: CallbackQuery, session: AsyncSession):
         status = "✅" if ct.is_active else "🔴"
         keyboard.append([
             InlineKeyboardButton(
-                text=f"{status} {ct.name} ({ct.wallet_address[:6]}...)",
+                text=f"{status} {ct.name + ' ' if ct.name else ''}({ct.wallet_address[:6]}...)",
                 callback_data=f"ct_settings:{ct.id}"
             )
         ])
@@ -50,7 +53,7 @@ async def show_copy_trade_menu(callback: CallbackQuery, session: AsyncSession):
     keyboard.extend([
         [InlineKeyboardButton(text="➕ Добавить", callback_data="ct_add")],
         [InlineKeyboardButton(text="🚫 Исключить токены", callback_data="ct_exclude_tokens")],
-        [InlineKeyboardButton(text="« Назад", callback_data="main_menu")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
     ])
 
     await callback.message.edit_text(
@@ -73,76 +76,82 @@ async def start_add_copy_trade(callback: CallbackQuery, state: FSMContext, sessi
         await callback.answer("Достигнут максимальный лимит копитрейдов (20)", show_alert=True)
         return
 
-    keyboard = [[
-        InlineKeyboardButton(text="« Отмена", callback_data="copy_trade")
-    ]]
-
-    await callback.message.edit_text(
-        "Введите название для нового копитрейда:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.answer(
+        "Введите адрес кошелька для отслеживания:",
+        reply_markup=ForceReply(selective=True)
     )
-    await state.set_state(CopyTradeStates.ENTER_NAME)
+    await state.set_state(CopyTradeStates.ENTER_ADDRESS)
+
+
+async def get_copy_trade_settings_keyboard(copy_trade_id: int, session: AsyncSession):
+    result = await session.execute(
+        select(CopyTrade).where(CopyTrade.id == copy_trade_id)
+    )
+    item = result.unique().scalar_one_or_none()
+    if not item:
+        return []
+    # Структура кнопок в формате {"text": "callback_query"}
+    buttons_data = [
+        [
+            {"📝 Название": f"ct_edit:name:{item.id}"},
+            {"👛 Адрес кошелька": f"ct_edit:wallet:{item.id}"}
+        ],
+        [{f"📊 Процент копирования: {_format_price(item.copy_percentage)}%": f"ct_edit:copy_percentage:{item.id}"}],
+        [{f"📉 Мин. сумма: {_format_price(item.min_amount)} SOL": f"ct_edit:min_amount:{item.id}"}],
+        [{f"📈 Макс. сумма: {_format_price(item.max_amount) if item.max_amount else 'Без лимита'} SOL": f"ct_edit:max_amount:{item.id}"}],
+        [{f"💰 Общая сумма: {_format_price(item.total_amount) if item.total_amount else 'Без лимита'} SOL": f"ct_edit:total_amount:{item.id}"}],
+        [{
+            f"🔄 Макс. копий токена: {item.max_copies_per_token or 'Без лимита'}": f"ct_edit:max_copies_per_token:{item.id}"}],
+        [
+            {f"⚡️ Buy Gas: {_format_price(item.buy_gas_fee / 1e9)}": f"ct_edit:buy_gas_fee:{item.id}"},
+            {f"⚡️ Sell Gas: {_format_price(item.sell_gas_fee / 1e9)}": f"ct_edit:sell_gas_fee:{item.id}"}
+        ],
+        [
+            {f"📊 Buy Slippage: {_format_price(item.buy_slippage)}%": f"ct_edit:buy_slippage:{item.id}"},
+            {f"📊 Sell Slippage: {_format_price(item.sell_slippage)}%": f"ct_edit:sell_slippage:{item.id}"}
+        ],
+        [
+            {f"{'✅' if item.copy_sells else '❌'} Копировать продажи": f"ct_edit:copy_sells:{item.id}"},
+            {f"{'✅' if item.anti_mev else '❌'} Anti-MEV": f"ct_edit:anti_mev:{item.id}"}
+        ],
+        [{f"{'✅' if item.is_active else '🔴'} Активный": f"ct_edit:is_active:{item.id}"}],
+        [{"🗑 Удалить": f"ct_delete:{item.id}"}],
+        [{"⬅️ Назад": "copy_trade"}]
+    ]
+
+    # Преобразование в InlineKeyboardButton
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=list(button.keys())[0],
+                callback_data=list(button.values())[0]) for button in row
+        ]
+        for row in buttons_data
+    ]
+
+    return keyboard
 
 
 @router.callback_query(lambda c: c.data.startswith("ct_settings:"))
-async def show_copy_settings(callback: CallbackQuery, session: AsyncSession):
+async def show_copy_settings(callback: CallbackQuery, session: AsyncSession, copy_trade_id = None):
     """Показать настройки конкретного копитрейда"""
-    copy_trade_id = int(callback.data.split(":")[1])
+    if copy_trade_id is None:
+        copy_trade_id = int(callback.data.split(":")[1])
 
     result = await session.execute(
         select(CopyTrade).where(CopyTrade.id == copy_trade_id)
     )
-    ct = result.scalar_one_or_none()
+    ct = result.unique().scalar_one_or_none()
 
     if not ct:
         await callback.answer("Копитрейд не найден", show_alert=True)
         return
 
-    keyboard = [
-        # Основные настройки
-        [InlineKeyboardButton(text="📝 Название", callback_data=f"ct_edit_name:{ct.id}")],
-        [InlineKeyboardButton(text="👛 Адрес кошелька", callback_data=f"ct_edit_wallet:{ct.id}")],
-
-        # Настройки копирования
-        [InlineKeyboardButton(text=f"📊 Процент копирования: {ct.copy_percentage}%",
-                              callback_data=f"ct_edit_percentage:{ct.id}")],
-        [InlineKeyboardButton(text=f"📉 Мин. сумма: {ct.min_amount} SOL",
-                              callback_data=f"ct_edit_min:{ct.id}")],
-        [InlineKeyboardButton(text=f"📈 Макс. сумма: {ct.max_amount or 'Без лимита'} SOL",
-                              callback_data=f"ct_edit_max:{ct.id}")],
-        [InlineKeyboardButton(text=f"💰 Общая сумма: {ct.total_amount or 'Без лимита'} SOL",
-                              callback_data=f"ct_edit_total:{ct.id}")],
-
-        # Настройки транзакций
-        [InlineKeyboardButton(text=f"🔄 Макс. копий токена: {ct.max_copies_per_token or 'Без лимита'}",
-                              callback_data=f"ct_edit_copies:{ct.id}")],
-        [InlineKeyboardButton(text=f"⚡️ Buy Gas: {ct.buy_gas_fee}",
-                              callback_data=f"ct_edit_buy_gas:{ct.id}")],
-        [InlineKeyboardButton(text=f"⚡️ Sell Gas: {ct.sell_gas_fee}",
-                              callback_data=f"ct_edit_sell_gas:{ct.id}")],
-        [InlineKeyboardButton(text=f"📊 Buy Slippage: {ct.buy_slippage}%",
-                              callback_data=f"ct_edit_buy_slip:{ct.id}")],
-        [InlineKeyboardButton(text=f"📊 Sell Slippage: {ct.sell_slippage}%",
-                              callback_data=f"ct_edit_sell_slip:{ct.id}")],
-
-        # Дополнительные настройки
-        [InlineKeyboardButton(text=f"{'✅' if ct.copy_sells else '❌'} Копировать продажи",
-                              callback_data=f"ct_toggle_sells:{ct.id}")],
-        [InlineKeyboardButton(text=f"{'✅' if ct.anti_mev else '❌'} Anti-MEV",
-                              callback_data=f"ct_toggle_mev:{ct.id}")],
-
-        # Управление
-        [InlineKeyboardButton(
-            text=f"{'✅' if ct.is_active else '🔴'} Активный",
-            callback_data=f"ct_toggle_active:{ct.id}"
-        )],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"ct_delete:{ct.id}")],
-        [InlineKeyboardButton(text="« Назад", callback_data="copy_trade")]
-    ]
+    keyboard = await get_copy_trade_settings_keyboard(ct.id, session)
 
     await callback.message.edit_text(
         f"⚙️ Настройки Copy Trading\n\n"
-        f"📋 Название: {ct.name}\n"
+        f"📋 Название: {ct.name if ct.name else '(Не задано)'}\n"
         f"👛 Кошелек: {ct.wallet_address[:6]}...{ct.wallet_address[-4:]}\n"
         f"📊 Статус: {'Активен ✅' if ct.is_active else 'Неактивен 🔴'}\n\n"
         "Выберите параметр для настройки:",
@@ -150,201 +159,11 @@ async def show_copy_settings(callback: CallbackQuery, session: AsyncSession):
     )
 
 
-@router.callback_query(F.data == "ct_exclude_tokens")
-async def show_excluded_tokens(callback: CallbackQuery, session: AsyncSession):
-    """Показать меню исключенных токенов"""
-    user_id = callback.from_user.id
-
-    result = await session.execute(
-        select(ExcludedToken)
-        .where(ExcludedToken.user_id == user_id)
-        .order_by(ExcludedToken.created_at)
-    )
-    excluded_tokens = result.scalars().all()
-
-    keyboard = []
-
-    # Добавляем исключенные токены
-    for token in excluded_tokens:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"❌ {token.token_address[:6]}...{token.token_address[-4:]}",
-                callback_data=f"ct_remove_excluded:{token.id}"
-            )
-        ])
-
-    # Добавляем кнопки управления
-    keyboard.extend([
-        [InlineKeyboardButton(text="➕ Добавить токен", callback_data="ct_add_excluded")],
-        [InlineKeyboardButton(text="« Назад", callback_data="copy_trade")]
-    ])
-
-    await callback.message.edit_text(
-        "🚫 Исключенные токены\n\n"
-        "Эти токены не будут копироваться:\n"
-        "Нажмите на токен, чтобы удалить его из списка.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-
-
-@router.message(CopyTradeStates.ENTER_NAME)
-async def handle_name_input(message: Message, state: FSMContext):
-    """Обработка ввода названия копитрейда"""
-    name = message.text.strip()
-
-    if len(name) > 32:
-        await message.reply(
-            "❌ Название слишком длинное. Максимум 32 символа.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Отмена", callback_data="copy_trade")]
-            ])
-        )
-        return
-
-    await state.update_data(name=name)
-    await message.reply(
-        "Введите адрес кошелька для отслеживания:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="« Отмена", callback_data="copy_trade")]
-        ])
-    )
-    await state.set_state(CopyTradeStates.ENTER_ADDRESS)
-
-
-@router.message(CopyTradeStates.ENTER_ADDRESS)
-async def handle_address_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода адреса кошелька"""
-    address = message.text.strip()
-
-    if len(address) != 44:
-        await message.reply(
-            "❌ Неверный формат адреса. Адрес должен состоять из 44 символов.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Отмена", callback_data="copy_trade")]
-            ])
-        )
-        return
-
-    # Проверяем существование пользователя
-    user = await session.scalar(
-        select(User).where(User.telegram_id == message.from_user.id)
-    )
-
-    if not user:
-        await message.reply(
-            "❌ Пользователь не найден. Пожалуйста, используйте /start для создания аккаунта.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Отмена", callback_data="copy_trade")]
-            ])
-        )
-        return
-
-    # Проверяем, не отслеживается ли уже этот адрес
-    exists = await session.scalar(
-        select(CopyTrade)
-        .where(CopyTrade.user_id == user.id)
-        .where(CopyTrade.wallet_address == address)
-    )
-
-    if exists:
-        await message.reply(
-            "❌ Этот адрес уже отслеживается.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Отмена", callback_data="copy_trade")]
-            ])
-        )
-        return
-
-    await state.update_data(wallet_address=address)
-
-    # Создаем новый копитрейд с дефолтными настройками
-    data = await state.get_data()
-    new_copy_trade = CopyTrade(
-        user_id=user.id,
-        name=data['name'],
-        wallet_address=address,
-        is_active=True,
-        copy_percentage=100.0,
-        min_amount=0.0,
-        max_amount=None,
-        total_amount=None,
-        max_copies_per_token=None,
-        copy_sells=True,
-        retry_count=1,
-        buy_gas_fee=100000,
-        sell_gas_fee=100000,
-        buy_slippage=1.0,
-        sell_slippage=1.0,
-        anti_mev=False
-    )
-
-    session.add(new_copy_trade)
-    await session.commit()
-    await session.refresh(new_copy_trade)
-
-    # Добавляем копитрейд в сервис
-    service = CopyTradeService()
-    await service.add_copy_trade(new_copy_trade)
-
-    # Показываем настройки нового копитрейда
-    keyboard = [
-        # Основные настройки
-        [InlineKeyboardButton(text="📝 Название", callback_data=f"ct_edit_name:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text="👛 Адрес кошелька", callback_data=f"ct_edit_wallet:{new_copy_trade.id}")],
-
-        # Настройки копирования
-        [InlineKeyboardButton(text=f"📊 Процент копирования: {new_copy_trade.copy_percentage}%",
-                              callback_data=f"ct_edit_percentage:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"📉 Мин. сумма: {new_copy_trade.min_amount} SOL",
-                              callback_data=f"ct_edit_min:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"📈 Макс. сумма: {new_copy_trade.max_amount or 'Без лимита'} SOL",
-                              callback_data=f"ct_edit_max:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"💰 Общая сумма: {new_copy_trade.total_amount or 'Без лимита'} SOL",
-                              callback_data=f"ct_edit_total:{new_copy_trade.id}")],
-
-        # Настройки транзакций
-        [InlineKeyboardButton(text=f"🔄 Макс. копий токена: {new_copy_trade.max_copies_per_token or 'Без лимита'}",
-                              callback_data=f"ct_edit_copies:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"⚡️ Buy Gas: {new_copy_trade.buy_gas_fee}",
-                              callback_data=f"ct_edit_buy_gas:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"⚡️ Sell Gas: {new_copy_trade.sell_gas_fee}",
-                              callback_data=f"ct_edit_sell_gas:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"📊 Buy Slippage: {new_copy_trade.buy_slippage}%",
-                              callback_data=f"ct_edit_buy_slip:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"📊 Sell Slippage: {new_copy_trade.sell_slippage}%",
-                              callback_data=f"ct_edit_sell_slip:{new_copy_trade.id}")],
-
-        # Дополнительные настройки
-        [InlineKeyboardButton(text=f"{'✅' if new_copy_trade.copy_sells else '❌'} Копировать продажи",
-                              callback_data=f"ct_toggle_sells:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text=f"{'✅' if new_copy_trade.anti_mev else '❌'} Anti-MEV",
-                              callback_data=f"ct_toggle_mev:{new_copy_trade.id}")],
-
-        # Управление
-        [InlineKeyboardButton(
-            text=f"{'✅' if new_copy_trade.is_active else '🔴'} Активный",
-            callback_data=f"ct_toggle_active:{new_copy_trade.id}"
-        )],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"ct_delete:{new_copy_trade.id}")],
-        [InlineKeyboardButton(text="« Назад", callback_data="copy_trade")]
-    ]
-
-    await message.reply(
-        f"⚙️ Настройки Copy Trading\n\n"
-        f"📋 Название: {new_copy_trade.name}\n"
-        f"👛 Кошелек: {new_copy_trade.wallet_address[:6]}...{new_copy_trade.wallet_address[-4:]}\n"
-        f"📊 Статус: {'Активен ✅' if new_copy_trade.is_active else 'Неактивен 🔴'}\n\n"
-        "Выберите параметр для настройки:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-    await state.clear()
-
-
-@router.callback_query(lambda c: c.data.startswith("ct_edit_"))
-async def handle_edit_setting(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(lambda c: c.data.startswith("ct_edit"))
+async def handle_edit_setting(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
     """Обработка редактирования настроек"""
-    setting = callback.data.split("_")[2].split(":")[0]
-    copy_trade_id = int(callback.data.split(":")[1])
+    setting = callback.data.split(":")[1]
+    copy_trade_id = int(callback.data.split(":")[2])
 
     # Сохраняем ID копитрейда в состоянии
     await state.update_data(copy_trade_id=copy_trade_id)
@@ -352,72 +171,287 @@ async def handle_edit_setting(callback: CallbackQuery, state: FSMContext):
     messages = {
         "name": "Введите новое название:",
         "wallet": "Введите новый адрес кошелька:",
-        "percentage": "Введите процент копирования (1-100):",
-        "min": "Введите минимальную сумму в SOL:",
-        "max": "Введите максимальную сумму в SOL (0 для отключения):",
-        "total": "Введите общую сумму в SOL (0 для отключения):",
-        "copies": "Введите максимальное количество копий токена (0 для отключения):",
-        "buy_gas": "Введите Gas Fee для покупки:",
-        "sell_gas": "Введите Gas Fee для продажи:",
-        "buy_slip": "Введите Slippage для покупки (%):",
-        "sell_slip": "Введите Slippage для продажи (%):"
+        "copy_percentage": "Введите процент копирования (1-100):",
+        "min_amount": "Введите минимальную сумму в SOL:",
+        "max_amount": "Введите максимальную сумму в SOL (0 для отключения):",
+        "total_amount": "Введите общую сумму в SOL (0 для отключения):",
+        "max_copies_per_token": "Введите максимальное количество копий токена (0 для отключения):",
+        "buy_gas_fee": "Введите Gas Fee для покупки:",
+        "sell_gas_fee": "Введите Gas Fee для продажи:",
+        "buy_slippage": "Введите Slippage для покупки (%):",
+        "sell_slippage": "Введите Slippage для продажи (%):"
     }
 
     states = {
         "name": CopyTradeStates.ENTER_NAME,
         "wallet": CopyTradeStates.ENTER_ADDRESS,
-        "percentage": CopyTradeStates.ENTER_PERCENTAGE,
-        "min": CopyTradeStates.ENTER_MIN_AMOUNT,
-        "max": CopyTradeStates.ENTER_MAX_AMOUNT,
-        "total": CopyTradeStates.ENTER_TOTAL_AMOUNT,
-        "copies": CopyTradeStates.ENTER_MAX_COPIES,
-        "buy_gas": CopyTradeStates.ENTER_BUY_GAS,
-        "sell_gas": CopyTradeStates.ENTER_SELL_GAS,
-        "buy_slip": CopyTradeStates.ENTER_BUY_SLIPPAGE,
-        "sell_slip": CopyTradeStates.ENTER_SELL_SLIPPAGE
+        "copy_percentage": CopyTradeStates.ENTER_PERCENTAGE,
+        "min_amount": CopyTradeStates.ENTER_MIN_AMOUNT,
+        "max_amount": CopyTradeStates.ENTER_MAX_AMOUNT,
+        "total_amount": CopyTradeStates.ENTER_TOTAL_AMOUNT,
+        "max_copies_per_token": CopyTradeStates.ENTER_MAX_COPIES,
+        "buy_gas_fee": CopyTradeStates.ENTER_BUY_GAS,
+        "sell_gas_fee": CopyTradeStates.ENTER_SELL_GAS,
+        "buy_slippage": CopyTradeStates.ENTER_BUY_SLIPPAGE,
+        "sell_slippage": CopyTradeStates.ENTER_SELL_SLIPPAGE
     }
+    toggled_settings = ['copy_sells', 'is_active', 'anti_mev']
+
+    if setting in toggled_settings:
+        result = await session.execute(select(CopyTrade).where(CopyTrade.id == copy_trade_id))
+        copy_trade = result.unique().scalar_one_or_none()
+        if not copy_trade:
+            await callback.answer("Копитрейд не найден", show_alert=True)
+            return
+        setattr(copy_trade, setting, not getattr(copy_trade, setting))
+        await session.commit()
+        return await show_copy_settings(callback, session, copy_trade_id)
 
     if setting in messages:
-        await callback.message.edit_text(
+        await callback.message.answer(
             messages[setting],
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{copy_trade_id}"
-                )]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
         await state.set_state(states[setting])
 
 
-@router.callback_query(lambda c: c.data.startswith("ct_toggle_"))
-async def handle_toggle_setting(callback: CallbackQuery, session: AsyncSession):
-    """Обработка переключения настроек"""
-    setting = callback.data.split("_")[2].split(":")[0]
-    copy_trade_id = int(callback.data.split(":")[1])
+def is_in_between(val, left, right, equal_limits=False):
+    if equal_limits:
+        return left <= val <= right
+    return left < val < right
 
-    result = await session.execute(
-        select(CopyTrade).where(CopyTrade.id == copy_trade_id)
+
+async def handle_copy_trade_settings_edit_base(
+        attribute,
+        message: types.Message, session: AsyncSession,
+        state: FSMContext, retry_action
+):
+    data = await state.get_data()
+    copy_trade_id = data.get('copy_trade_id')
+    common_defaults = {
+        "type": str,
+        "unit": "",
+        "min": 0,
+        "max": 100,
+        "equal_limits": True
+    }
+
+    attribute_name_dict = {
+        "name": {"name": "Название", "max": 255, "equal_limits": False},
+        "wallet": {"name": "Кошелек", "equal_limits": False},
+        "copy_percentage": {"type": float, "name": "Процент копирования", "unit": "%"},
+        "min_amount": {"type": float, "name": "Минимальная сумма", "unit": "SOL", "max": 10000},
+        "max_amount": {"type": float, "name": "Максимальная сумма", "unit": "SOL", "max": 10000},
+        "total_amount": {"type": float, "name": "Общая сумма", "unit": "SOL", "max": 10000},
+        "max_copies_per_token": {"type": int, "name": "Максимальное количество копий токена", "max": 100000},
+        "buy_gas_fee": {"type": float, "name": "Gas Fee для покупки", "unit": "SOL", "equal_limits": False},
+        "sell_gas_fee": {"type": float, "name": "Gas Fee для продажи", "unit": "SOL", "equal_limits": False},
+        "buy_slippage": {"type": float, "name": "Slippage для покупки", "unit": "%"},
+        "sell_slippage": {"type": float, "name": "Slippage для продажи", "unit": "%"},
+    }
+
+    # Добавляем общие параметры к каждому атрибуту
+    compact_attributes = {
+        key: {**common_defaults, **values}
+        for key, values in attribute_name_dict.items()
+    }
+    attribute_name = attribute
+    try:
+        # Получаем пользователя
+        user_id = message.from_user.id
+        user_res = await session.execute(select(User).where(User.telegram_id == user_id))
+        user = user_res.unique().scalar_one_or_none()
+        if not user:
+            await message.reply("❌ Пользователь не найден")
+            return
+        # Получаем текущие настройки
+        result = await session.execute(
+            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
+        )
+        item = result.unique().scalar_one_or_none()
+        print("INFOOO:", not item, attribute not in compact_attributes, item.user_id != user.id, attribute)
+        if not item \
+                or attribute not in compact_attributes \
+                or item.user_id != user.id:
+            await message.reply("❌ Настройки не найдены")
+            return
+        attribute_info = compact_attributes.get(attribute)
+        # Получаем значение из сообщения
+        value = message.text.strip()
+        attribute_type = attribute_info.get('type')
+        attribute_name = attribute_info.get('name')
+        attribute_unit = attribute_info.get('unit')
+        attr_min = attribute_info.get('min')
+        attr_max = attribute_info.get('max')
+        attr_equal_limits = attribute_info.get('equal_limits')
+        # Проверяем
+        try:
+            value = attribute_type(value)
+            if attribute_type is str and \
+                    (len(value) > attr_max or len(value) < attr_min):
+                raise ValueError
+            if attribute_type in (int, float) \
+                    and not is_in_between(value, attr_min, attr_max, attr_equal_limits):
+                raise ValueError
+        except ValueError:
+            await message.reply(
+                f"❌ Пожалуйста, введите корректное значение для {attribute_name} "
+                + f"({'строку длиной c ' + str(attr_min) + ' до ' + str(attr_max) + 'символов' if attribute_type is str else f'{attr_min} - {attr_max}'})",
+                reply_markup=ForceReply(selective=True))
+            await state.set_state(retry_action)
+            return
+        if attribute in ["buy_gas_fee", "sell_gas_fee"]:
+            value *= 1e9
+        if attribute in ('copy_sells', 'is_active', 'anti_mev'):
+            setattr(item, attribute, not getattr(item, attribute))
+        else:
+            setattr(item, attribute, value)
+        await session.commit()
+
+        # Отправляем подтверждение
+        await message.reply(f"✅ {attribute_name} установлено: {value}{attribute_unit}")
+
+        # Показываем обновленное меню настроек
+        keyboard = await get_copy_trade_settings_keyboard(copy_trade_id, session)
+
+        await message.answer(
+            f"⚙️ Настройки Copy Trading\n\n"
+            f"📋 Название: {item.name if item.name else '(Не задано)'}\n"
+            f"👛 Кошелек: {item.wallet_address[:6]}...{item.wallet_address[-4:]}\n"
+            f"📊 Статус: {'Активен ✅' if item.is_active else 'Неактивен 🔴'}\n\n"
+            "Выберите параметр для настройки:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+
+    except Exception as e:
+        logger.error(f"Error handling {copy_trade_id} {attribute}: {e}")
+        traceback.print_exc()
+        await message.reply(
+            f"❌ Произошла ошибка при установке {attribute_name}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"ct_settings:{copy_trade_id}")]
+            ])
+        )
+
+
+@router.message(CopyTradeStates.ENTER_NAME, flags={"priority": 5})
+async def handle_ct_name(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="name",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_NAME
     )
-    ct = result.scalar_one_or_none()
 
-    if not ct:
-        await callback.answer("Копитрейд не найден", show_alert=True)
-        return
 
-    if setting == "active":
-        ct.is_active = not ct.is_active
-        message = f"Копитрейд {'активирован' if ct.is_active else 'деактивирован'}"
-    elif setting == "sells":
-        ct.copy_sells = not ct.copy_sells
-        message = f"Копирование продаж {'включено' if ct.copy_sells else 'отключено'}"
-    elif setting == "mev":
-        ct.anti_mev = not ct.anti_mev
-        message = f"Anti-MEV {'включен' if ct.anti_mev else 'отключен'}"
+@router.message(CopyTradeStates.ENTER_PERCENTAGE, flags={"priority": 5})
+async def handle_ct_copy_percentage(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="copy_percentage",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_PERCENTAGE
+    )
 
-    await session.commit()
-    await callback.answer(message)
-    await show_copy_settings(callback, session)
+
+@router.message(CopyTradeStates.ENTER_MIN_AMOUNT, flags={"priority": 5})
+async def handle_ct_min_amount(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="min_amount",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_MIN_AMOUNT
+    )
+
+
+@router.message(CopyTradeStates.ENTER_MAX_AMOUNT, flags={"priority": 5})
+async def handle_ct_max_amount(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="max_amount",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_MAX_AMOUNT
+    )
+
+
+@router.message(CopyTradeStates.ENTER_TOTAL_AMOUNT, flags={"priority": 5})
+async def handle_ct_total_amount(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="total_amount",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_TOTAL_AMOUNT
+    )
+
+
+@router.message(CopyTradeStates.ENTER_MAX_COPIES, flags={"priority": 5})
+async def handle_ct_max_copies_per_token(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="max_copies_per_token",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_MAX_COPIES
+    )
+
+
+@router.message(CopyTradeStates.ENTER_BUY_GAS, flags={"priority": 5})
+async def handle_ct_buy_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="buy_gas_fee",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_BUY_GAS
+    )
+
+
+@router.message(CopyTradeStates.ENTER_SELL_GAS, flags={"priority": 5})
+async def handle_ct_sell_gas_fee(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="sell_gas_fee",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_SELL_GAS
+    )
+
+
+@router.message(CopyTradeStates.ENTER_BUY_SLIPPAGE, flags={"priority": 5})
+async def handle_ct_buy_slippage(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="buy_slippage",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_BUY_SLIPPAGE
+    )
+
+
+@router.message(CopyTradeStates.ENTER_SELL_SLIPPAGE, flags={"priority": 5})
+async def handle_ct_sell_slippage(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Обработчик для установки значения Gas Fee"""
+    return await handle_copy_trade_settings_edit_base(
+        attribute="sell_slippage",
+        message=message,
+        session=session,
+        state=state,
+        retry_action=CopyTradeStates.ENTER_SELL_SLIPPAGE
+    )
 
 
 @router.callback_query(lambda c: c.data.startswith("ct_delete:"))
@@ -451,7 +485,7 @@ async def start_add_excluded_token(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "Введите адрес токена, который нужно исключить:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="« Отмена", callback_data="ct_exclude_tokens")]
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="ct_exclude_tokens")]
         ])
     )
     await state.set_state(CopyTradeStates.ENTER_EXCLUDED_TOKEN)
@@ -466,7 +500,7 @@ async def handle_excluded_token_input(message: Message, state: FSMContext, sessi
         await message.reply(
             "❌ Неверный формат адреса. Адрес должен состоять из 44 символов.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Отмена", callback_data="ct_exclude_tokens")]
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="ct_exclude_tokens")]
             ])
         )
         return
@@ -482,7 +516,7 @@ async def handle_excluded_token_input(message: Message, state: FSMContext, sessi
         await message.reply(
             "❌ Этот токен уже исключен.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="« Отмена", callback_data="ct_exclude_tokens")]
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="ct_exclude_tokens")]
             ])
         )
         return
@@ -524,395 +558,133 @@ async def handle_remove_excluded_token(callback: CallbackQuery, session: AsyncSe
     await show_excluded_tokens(callback, session)
 
 
-@router.message(CopyTradeStates.ENTER_PERCENTAGE)
-async def handle_percentage_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода процента копирования"""
-    try:
-        percentage = float(message.text.replace(",", "."))
-        if percentage <= 0 or percentage > 100:
-            raise ValueError("Invalid percentage")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.copy_percentage = percentage
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите число от 1 до 100:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_MIN_AMOUNT)
-async def handle_min_amount_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода минимальной суммы"""
-    try:
-        amount = float(message.text.replace(",", "."))
-        if amount < 0:
-            raise ValueError("Invalid amount")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.min_amount = amount
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите положительное число:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_MAX_AMOUNT)
-async def handle_max_amount_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода максимальной суммы"""
-    try:
-        amount = float(message.text.replace(",", "."))
-        if amount < 0:
-            raise ValueError("Invalid amount")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.max_amount = amount if amount > 0 else None
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите положительное число (0 для отключения):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_TOTAL_AMOUNT)
-async def handle_total_amount_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода общей суммы"""
-    try:
-        amount = float(message.text.replace(",", "."))
-        if amount < 0:
-            raise ValueError("Invalid amount")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.total_amount = amount if amount > 0 else None
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите положительное число (0 для отключения):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_MAX_COPIES)
-async def handle_max_copies_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода максимального количества копий"""
-    try:
-        copies = int(message.text)
-        if copies < 0:
-            raise ValueError("Invalid copies")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.max_copies_per_token = copies if copies > 0 else None
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите целое положительное число (0 для отключения):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_BUY_GAS)
-async def handle_buy_gas_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода Gas Fee для покупки"""
-    try:
-        gas = int(message.text)
-        if gas <= 0:
-            raise ValueError("Invalid gas")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.buy_gas_fee = gas
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите положительное целое число:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_SELL_GAS)
-async def handle_sell_gas_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода Gas Fee для продажи"""
-    try:
-        gas = int(message.text)
-        if gas <= 0:
-            raise ValueError("Invalid gas")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.sell_gas_fee = gas
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите положительное целое число:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_BUY_SLIPPAGE)
-async def handle_buy_slippage_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода Slippage для покупки"""
-    try:
-        slippage = float(message.text.replace(",", "."))
-        if slippage <= 0 or slippage > 100:
-            raise ValueError("Invalid slippage")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.buy_slippage = slippage
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите число от 0.1 до 100:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.message(CopyTradeStates.ENTER_SELL_SLIPPAGE)
-async def handle_sell_slippage_input(message: Message, state: FSMContext, session: AsyncSession):
-    """Обработка ввода Slippage для продажи"""
-    try:
-        slippage = float(message.text.replace(",", "."))
-        if slippage <= 0 or slippage > 100:
-            raise ValueError("Invalid slippage")
-
-        data = await state.get_data()
-        copy_trade_id = data["copy_trade_id"]
-
-        result = await session.execute(
-            select(CopyTrade).where(CopyTrade.id == copy_trade_id)
-        )
-        ct = result.scalar_one_or_none()
-
-        if not ct:
-            await message.reply("❌ Копитрейд не найден")
-            return
-
-        ct.sell_slippage = slippage
-        await session.commit()
-
-        await state.clear()
-        await show_copy_settings(
-            callback=CallbackQuery(message=message, data=f"ct_settings:{copy_trade_id}"),
-            session=session
-        )
-
-    except ValueError:
-        await message.reply(
-            "❌ Неверное значение. Введите число от 0.1 до 100:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="« Отмена",
-                    callback_data=f"ct_settings:{data['copy_trade_id']}"
-                )]
-            ])
-        )
-
-
-@router.callback_query(lambda c: c.data.startswith("ct_toggle_active:"))
-async def handle_toggle_active(callback: CallbackQuery, session: AsyncSession):
-    """Обработка включения/выключения копитрейда"""
-    copy_trade_id = int(callback.data.split(":")[1])
+# todo think bout it
+@router.callback_query(F.data == "ct_exclude_tokens")
+async def show_excluded_tokens(callback: CallbackQuery, session: AsyncSession):
+    """Показать меню исключенных токенов"""
+    user_id = callback.from_user.id
 
     result = await session.execute(
-        select(CopyTrade).where(CopyTrade.id == copy_trade_id)
+        select(ExcludedToken)
+        .where(ExcludedToken.user_id == user_id)
+        .order_by(ExcludedToken.created_at)
     )
-    ct = result.unique().scalar_one_or_none()
+    excluded_tokens = result.scalars().all()
 
-    if not ct:
-        await callback.answer("Копитрейд не найден", show_alert=True)
+    keyboard = []
+
+    # Добавляем исключенные токены
+    for token in excluded_tokens:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"❌ {token.token_address[:6]}...{token.token_address[-4:]}",
+                callback_data=f"ct_remove_excluded:{token.id}"
+            )
+        ])
+
+    # Добавляем кнопки управления
+    keyboard.extend([
+        [InlineKeyboardButton(text="➕ Добавить токен", callback_data="ct_add_excluded")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="copy_trade")]
+    ])
+
+    await callback.message.edit_text(
+        "🚫 Исключенные токены\n\n"
+        "Эти токены не будут копироваться:\n"
+        "Нажмите на токен, чтобы удалить его из списка.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+
+@router.message(CopyTradeStates.ENTER_ADDRESS)
+async def handle_address_input(message: Message, state: FSMContext, session: AsyncSession):
+    """Обработка ввода адреса кошелька"""
+    address = message.text.strip()
+
+    if len(address) != 44:
+        await state.set_state(CopyTradeStates.ENTER_ADDRESS)
+        await message.reply(
+            "❌ Неверный формат адреса. Адрес должен состоять из 44 символов.",
+            reply_markup=ForceReply(selective=True)
+        )
         return
 
-    ct.is_active = not ct.is_active
+    # Проверяем существование пользователя
+    user = await session.scalar(
+        select(User).where(User.telegram_id == message.from_user.id)
+    )
 
-    # Обновляем статус в сервисе
+    if not user:
+        await message.reply(
+            "❌ Пользователь не найден. Пожалуйста, используйте /start для создания аккаунта.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="copy_trade")]
+            ])
+        )
+        return
+    if user.solana_wallet == address:
+        await state.set_state(CopyTradeStates.ENTER_ADDRESS)
+        await message.reply(
+            "❌ Нельзя отслеживать свои же кошелек.",
+            reply_markup=ForceReply(selective=True)
+        )
+        return
+
+    # Проверяем, не отслеживается ли уже этот адрес
+    exists = await session.scalar(
+        select(CopyTrade)
+        .where(CopyTrade.user_id == user.id)
+        .where(CopyTrade.wallet_address == address)
+    )
+
+    if exists:
+        await message.reply(
+            "❌ Этот адрес уже отслеживается.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="copy_trade")]
+            ])
+        )
+        return
+
+    await state.update_data(wallet_address=address)
+
+    # Создаем новый копитрейд с дефолтными настройками
+    data = await state.get_data()
+    new_copy_trade = CopyTrade(
+        user_id=user.id,
+        wallet_address=address,
+        is_active=True,
+        copy_percentage=100.0,
+        min_amount=0.0,
+        max_amount=None,
+        total_amount=None,
+        max_copies_per_token=None,
+        copy_sells=True,
+        retry_count=1,
+        buy_gas_fee=100000,
+        sell_gas_fee=100000,
+        buy_slippage=1.0,
+        sell_slippage=1.0,
+        anti_mev=False
+    )
+
+    session.add(new_copy_trade)
+    await session.commit()
+    await session.refresh(new_copy_trade)
+
+    # Добавляем копитрейд в сервис
     service = CopyTradeService()
-    await service.toggle_copy_trade(ct, session)
+    await service.add_copy_trade(new_copy_trade)
 
-    message = f"Копитрейд {'активирован' if ct.is_active else 'деактивирован'}"
-    await callback.answer(message)
-    await show_copy_settings(callback, session)
+    # Показываем настройки нового копитрейда
+    keyboard = await get_copy_trade_settings_keyboard(new_copy_trade.id, session)
+
+    await message.reply(
+        f"⚙️ Настройки Copy Trading\n\n"
+        f"📋 Название: {new_copy_trade.name}\n"
+        f"👛 Кошелек: {new_copy_trade.wallet_address[:6]}...{new_copy_trade.wallet_address[-4:]}\n"
+        f"📊 Статус: {'Активен ✅' if new_copy_trade.is_active else 'Неактивен 🔴'}\n\n"
+        "Выберите параметр для настройки:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await state.clear()
