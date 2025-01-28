@@ -44,7 +44,7 @@ class AsyncLimitOrders:
             .where(LimitOrder.id == order_id)
         )
         result = await session.execute(stmt)
-        order = result.scalar_one_or_none()
+        order = result.unique().scalar_one_or_none()
         
         logger.info(f"Sending success limit order notification for order {order_id}")
 
@@ -54,7 +54,7 @@ class AsyncLimitOrders:
         # Получаем информацию о пользователе
         stmt = select(User).where(User.id == order.user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = result.unique().scalar_one_or_none()
         
         logger.info(f"User ID: {user.telegram_id}")
 
@@ -73,12 +73,12 @@ class AsyncLimitOrders:
         # Отправляем уведомление
         await self.bot.send_message(
             user.telegram_id,
-            f"�� Успешный лимитный ордер #{order_id}\n"
-            f"�� Сумма: {_format_price(order.amount_sol)} SOL\n"
-            f"�� Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
-            f"�� Токен: {token_info.symbol}\n"
-            f"���️ Slippage: {order.slippage}%\n"
-            f"�� Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"✅ Успешный лимитный ордер #{order_id}\n"
+            f"💰 Сумма: {_format_price(order.amount_sol)} SOL\n"
+            f"📉 Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
+            f"🔖 Токен: {token_info.symbol}\n"
+            f"⚙️ Slippage: {order.slippage}%\n"
+            f"🕒 Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
         )
     
     async def error_limit_order(self, session: AsyncSession, order_id: int):
@@ -88,7 +88,7 @@ class AsyncLimitOrders:
             .where(LimitOrder.id == order_id)
         )
         result = await session.execute(stmt)
-        order = result.scalar_one_or_none()
+        order = result.unique().scalar_one_or_none()
 
         if not order:
             return
@@ -96,7 +96,7 @@ class AsyncLimitOrders:
         # Получаем информацию о пользователе
         stmt = select(User).where(User.id == order.user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = result.unique().scalar_one_or_none()
 
         if not user:
             return
@@ -188,7 +188,7 @@ class AsyncLimitOrders:
                 # Получаем все активные ордера
                 stmt = select(LimitOrder).where(LimitOrder.status == 'active')
                 result = await session.execute(stmt)
-                active_orders = result.scalars().all()
+                active_orders = result.unique().scalars().all()
 
                 for order in active_orders:
                     # Получаем текущую цену токена
