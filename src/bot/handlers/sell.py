@@ -38,7 +38,7 @@ def _is_valid_token_address(address: str) -> bool:
 
 @router.callback_query(F.data == "sell", flags={"priority": 3})
 async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    """Обработчик нажатия кнопки Продать в главном меню"""
+    """Handle sell button press"""
     try:
         await state.set_state(SellStates.waiting_for_token)
 
@@ -52,17 +52,73 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
             await callback_query.answer("❌ Пользователь не найден")
             return
 
-        await callback_query.message.answer(
-            "🔍 Введите адрес токена, который хотите продать:\n"
-            "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
-            # f"{token_links_text}\n\n",
-            parse_mode="MARKDOWN",
-            reply_markup=ForceReply(selective=True)
+        # Create SolanaClient instance
+        solana_client = SolanaClient(compute_unit_price=100000)  # Default compute unit price
+        
+        # Get user's tokens
+        tokens = await solana_client.get_tokens(user.solana_wallet)
+        
+        if not tokens:
+            await callback_query.message.edit_text(
+                "❌ У вас нет токенов для продажи",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+                ])
+            )
+            return
+
+        # Create keyboard with tokens
+        keyboard = []
+        for token_address, market_cap, name, symbol in tokens:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"💎 {symbol} ({name})", 
+                    callback_data=f"select_token_{token_address}"
+                )
+            ])
+
+        # Add back button
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
+
+        await callback_query.message.edit_text(
+            "🔴 Выберите токен для продажи:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
+
+        await state.set_state(SellStates.waiting_for_token)
+
     except Exception as e:
         print(traceback.format_exc())
         logger.error(f"Error in sell button handler: {e}")
-        await callback_query.answer("❌ Произошла ошибка")
+        traceback.print_exc()
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при получении списка токенов",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ])
+        )
+
+# Добавляем новый обработчик для выбора токена из списка
+@router.callback_query(lambda c: c.data.startswith("select_token_"), flags={"priority": 3})
+async def handle_token_selection(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    try:
+        token_address = callback_query.data.replace("select_token_", "")
+        
+        # Store token address in state
+        await state.update_data(token_address=token_address)
+        
+        # Show sell menu for selected token
+        await show_sell_menu(callback_query.message, state, session)
+        
+    except Exception as e:
+        logger.error(f"Error handling token selection: {e}")
+        traceback.print_exc()
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при выборе токена",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="sell")]
+            ])
+        )
 
 
 @router.message(F.text.startswith("token_"), flags={"priority": 2})
@@ -531,6 +587,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
 
     except Exception as e:
         logger.error(f"Error showing sell menu: {e}")
+        traceback.print_exc()
         await message.edit_text(
             "❌ Произошла ошибка при отображении меню",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[

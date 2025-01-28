@@ -139,7 +139,7 @@ def is_rate_limit_error(exception):
 
 class SolanaClient:
     def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
-        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://solana-mainnet.core.chainstack.com/1477348d5255a5a82def1ba221b5a610")
+        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
         self.compute_unit_price = compute_unit_price
         self.client = AsyncClient(self.rpc_endpoint)
         self._private_key = private_key
