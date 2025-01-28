@@ -13,8 +13,9 @@ from src.services.solana_service import SolanaService
 from src.services.smart_money import SmartMoneyTracker
 from src.services.rugcheck import RugCheckService
 from .middleware import DatabaseMiddleware, ServicesMiddleware
-from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell
+from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell, settings, referral_system
 from .services.copy_trade_service import CopyTradeService
+from src.solana_module.limit_orders import AsyncLimitOrders
 
 logger = setup_logging()
 
@@ -34,6 +35,9 @@ class SolanaDEXBot:
             self.rugcheck_service = RugCheckService()
             self.copy_trade_service = CopyTradeService()
             self.copy_trade_service.set_bot(self.bot)  # Set bot instance for notifications
+            
+            # Initialize limit orders service
+            self.limit_orders_service = None  # Will be initialized after DB setup
 
             # Setup database
             self.engine = create_async_engine(
@@ -88,6 +92,8 @@ class SolanaDEXBot:
         self.dp.include_router(rugcheck.router)
         self.dp.include_router(copy_trade.router)
         self.dp.include_router(buy.router)
+        self.dp.include_router(settings.router)
+        self.dp.include_router(referral_system.router)
 
         logger.info("Handlers registered successfully")
 
@@ -99,6 +105,16 @@ class SolanaDEXBot:
     async def start(self):
         """Start the bot polling"""
         try:
+            # Initialize limit orders service
+            logger.info("Starting limit orders monitoring...")
+            self.limit_orders_service = AsyncLimitOrders(self.Session, self)
+            await self.limit_orders_service.start()
+            
+            # Start monitoring in background
+            self.limit_orders_task = asyncio.create_task(
+                self.limit_orders_service.monitor_prices(interval=15)
+            )
+
             # Start copy trade service
             logger.info("Starting copy trade service...")
             async with self.Session() as session:
@@ -110,6 +126,8 @@ class SolanaDEXBot:
             logger.error(f"Bot polling error: {e}")
         finally:
             # Cleanup
+            if hasattr(self, 'limit_orders_service'):
+                await self.limit_orders_service.close()
             if hasattr(self, 'copy_trade_service'):
                 await self.copy_trade_service.stop()
             if hasattr(self, 'rugcheck_service'):

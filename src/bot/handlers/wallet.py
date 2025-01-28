@@ -17,6 +17,8 @@ from aiogram import F
 from src.database.models import User
 from src.services.solana_service import SolanaService
 from solders.keypair import Keypair
+
+from .buy import _format_price
 from .start import get_real_user_id
 from src.bot.states import WalletStates
 
@@ -79,7 +81,7 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: As
         await callback_query.message.edit_text(
             f"💼 Управление кошельком\n\n"
             f"💳 Текущий адрес: <code>{user.solana_wallet}</code>\n"
-            f"💰 Баланс: {balance:.4f} SOL (${usd_balance:.2f})\n\n"
+            f"💰 Баланс: {_format_price(balance)} SOL (${_format_price(usd_balance)})\n\n"
             "⚠️ ВНИМАНИЕ:\n"
             "1. Никогда не делитесь своим приватным ключом\n"
             "2. Храните его в надежном месте\n"

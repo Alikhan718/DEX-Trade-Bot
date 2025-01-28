@@ -14,7 +14,7 @@ class Config:
     def get_env_variable(var_name: str, default: Optional[str] = None) -> str:
         """
         Safely retrieve environment variables
-        
+
         :param var_name: Name of the environment variable
         :param default: Default value if variable is not set
         :return: Value of the environment variable
@@ -23,16 +23,16 @@ class Config:
         if value is None or value.strip() == "":
             raise ValueError(f"Critical environment variable {var_name} is not set!")
         return value.strip()
-    
+
     # Core bot configuration
     TELEGRAM_BOT_TOKEN = get_env_variable('TELEGRAM_BOT_TOKEN')
-    
+
     # Database configuration
     DATABASE_URL = get_env_variable(
         'DATABASE_URL',
         'postgresql+asyncpg://postgres:postgres@localhost:5432/dex_bot'
     )
-    
+
     # RPC configuration
     SOLANA_RPC_URLS = [
         'https://api.mainnet-beta.solana.com',  # Public RPC
@@ -47,14 +47,15 @@ class Config:
     ]
     SOLANA_RPC_URL = SOLANA_RPC_URLS[0]  # Use public RPC by default
     BOT_USERNAME = get_env_variable('BOT_USERNAME', 'DEX_Copy_Trade_Bot')
-    
+
     # Logging configuration
+    # Логгинг конфигурация с добавлением номера строки
     LOGGING_CONFIG = {
         'version': 1,
         'disable_existing_loggers': False,
         'formatters': {
             'standard': {
-                'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                'format': '%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s',  # Добавлен номер строки
                 'encoding': 'utf-8'
             },
         },
@@ -81,3 +82,4 @@ class Config:
             }
         }
     }
+

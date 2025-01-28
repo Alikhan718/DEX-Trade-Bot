@@ -5,6 +5,8 @@ class BuyStates(StatesGroup):
     waiting_for_token = State()
     waiting_for_amount = State()
     waiting_for_slippage = State()
+    waiting_for_trigger_price = State()
+    waiting_for_gas_fee = State()
 
 
 class LimitBuyStates(StatesGroup):
@@ -19,6 +21,7 @@ class SellStates(StatesGroup):
     waiting_for_token = State()
     waiting_for_percentage = State()
     waiting_for_slippage = State()
+    waiting_for_gas_fee = State()
 
 
 class WalletStates(StatesGroup):
@@ -51,3 +54,13 @@ class CopyTradeStates(StatesGroup):
 class AutoBuySettingsStates(StatesGroup):
     ENTER_AMOUNT = State()
     ENTER_SLIPPAGE = State()
+
+
+class BuySettingStates(StatesGroup):
+    waiting_for_gas_fee = State()
+    waiting_for_slippage = State()
+
+
+class SellSettingStates(StatesGroup):
+    waiting_for_gas_fee = State()
+    waiting_for_slippage = State()

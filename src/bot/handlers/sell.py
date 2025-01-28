@@ -1,7 +1,7 @@
 import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from solders.pubkey import Pubkey
@@ -9,11 +9,15 @@ from solders.pubkey import Pubkey
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
 from src.database.models import User
+from .buy import _format_price
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
 from src.bot.states import SellStates
 from src.bot.crud import get_user_setting, update_user_setting
+from src.solana_module.solana_client import SolanaClient
+from src.solana_module.token_info import token_info
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -32,32 +36,40 @@ def _is_valid_token_address(address: str) -> bool:
         return False
 
 
-def _format_price(amount: float) -> str:
-    """Форматирует цену в читаемый вид"""
-    if amount >= 1_000_000:
-        return f"{amount / 1_000_000:.2f}M"
-    elif amount >= 1_000:
-        return f"{amount / 1_000:.1f}K"
-    else:
-        return f"{amount:.2f}"
-
-
 @router.callback_query(F.data == "sell", flags={"priority": 3})
-async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext):
+async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Обработчик нажатия кнопки Продать в главном меню"""
     try:
         await state.set_state(SellStates.waiting_for_token)
-        await callback_query.message.edit_text(
+
+        # Get user's token balance
+        user_id = get_real_user_id(callback_query)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+
+        if not user:
+            await callback_query.answer("❌ Пользователь не найден")
+            return
+
+        await callback_query.message.answer(
             "🔍 Введите адрес токена, который хотите продать:\n"
             "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
+            # f"{token_links_text}\n\n",
             parse_mode="MARKDOWN",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
     except Exception as e:
+        print(traceback.format_exc())
         logger.error(f"Error in sell button handler: {e}")
         await callback_query.answer("❌ Произошла ошибка")
+
+
+@router.message(F.text.startswith("token_"), flags={"priority": 2})
+async def on_token_selected_via_link(message: types.Message, state: FSMContext, session: AsyncSession,
+                                     solana_service: SolanaService):
+    message.text = message.text.split("_")[1]
+    await handle_token_input(message, state, session, solana_service)
 
 
 @router.message(SellStates.waiting_for_token, flags={"priority": 2})
@@ -71,17 +83,15 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             await message.reply(
                 "❌ Неверный формат адреса токена\n"
                 "Пожалуйста, введите корректный адрес:",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
-                ])
+                reply_markup=ForceReply(selective=True)
             )
             return
 
         # Get user's token balance
         user_id = get_real_user_id(message)
         stmt = select(User).where(User.telegram_id == user_id)
-        result = await session.execute(stmt)
-        user = result.unique().scalar_one_or_none()
+        sell_setting = await session.execute(stmt)
+        user = sell_setting.unique().scalar_one_or_none()
 
         if not user:
             await message.reply("❌ Пользователь не найден")
@@ -119,8 +129,9 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve)
 
         # Save token data to state
-        result = await get_user_setting(user_id, 'sell', session)
-        slippage = result['slippage']
+        sell_setting = await get_user_setting(user_id, 'sell', session)
+        slippage = sell_setting['slippage']
+        gas_fee = sell_setting['gas_fee']
         await state.update_data({
             'token_address': token_address,
             'bonding_curve': str(bonding_curve),
@@ -128,7 +139,8 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             'token_balance': token_balance_decimal,
             'operation_context': 'sell',  # Set operation context to sell
             'sell_percentage': 100,  # Default to 100%
-            'slippage': slippage  # Default slippage
+            'slippage': slippage,  # Default slippage
+            'gas_fee': gas_fee
         })
 
         sell_percentage = 100
@@ -140,22 +152,22 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
 
         # Формируем клавиатуру
         user_id = get_real_user_id(message)
-        stmt = select(User.last_buy_amount).where(User.id == user_id)
-        result = await session.execute(stmt)
-        last_buy_amount = result.scalar()
+        stmt = select(User.last_buy_amount).where(User.telegram_id == user_id)
+        sell_setting = await session.execute(stmt)
+        last_buy_amount = sell_setting.scalar()
 
-        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage)
+        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage, gas_fee)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
-            f"💰 Баланс: {token_balance_decimal:.6f} токенов\n"
+            f"💰 Баланс: {_format_price(token_balance_decimal)} токенов\n"
             f"⚙️ Slippage: {slippage}%\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
-            f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
-            f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
+            f"• Renounced: {'✅️' if token_info.is_renounced else '✗'} "
+            f"Burnt: {'✅️' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
 
@@ -269,8 +281,8 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             await status_message.edit_text(
                 "✅ Токен успешно продан!\n\n"
                 f"💰 Продано: {amount_tokens:.6f} токенов ({sell_type})\n"
-                f"💵 Цена: {current_price_sol:.6f} SOL\n"
-                f"💰 Получено: {(amount_tokens * current_price_sol):.4f} SOL\n"
+                f"💵 Цена: {_format_price(current_price_sol)} SOL\n"
+                f"💰 Получено: {_format_price(amount_tokens * current_price_sol)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
                 disable_web_page_preview=True,
@@ -308,20 +320,26 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
         if not data.get("token_address"):
             await callback_query.answer("❌ Ошибка: не выбран токен")
             return
-
+        chosen_slippage = data.get('slippage')
         # Save sell context
         await state.update_data(menu_type="sell")
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="0.5%", callback_data="sell_slippage_0.5"),
-                InlineKeyboardButton(text="1%", callback_data="sell_slippage_1"),
-                InlineKeyboardButton(text="2%", callback_data="sell_slippage_2")
+                InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 0.05 else ''} 0.5%",
+                                     callback_data="sell_slippage_0.5"),
+                InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 1 else ''} 1%",
+                                     callback_data="sell_slippage_1"),
+                InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 2 else ''} 2%", callback_data="sell_slippage_2")
             ],
             [
-                InlineKeyboardButton(text="3%", callback_data="sell_slippage_3"),
-                InlineKeyboardButton(text="5%", callback_data="sell_slippage_5"),
-                InlineKeyboardButton(text="Custom", callback_data="sell_slippage_custom")
+                InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 3 else ''} 3%",
+                                     callback_data="sell_slippage_3"),
+                InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 5 else ''} 5%",
+                                     callback_data="sell_slippage_5"),
+                InlineKeyboardButton(
+                    text=f"{'✅️ ' + str(_format_price(chosen_slippage)) if chosen_slippage and chosen_slippage not in [0.05, 1, 2, 3, 5] else ''} Custom",
+                    callback_data="sell_slippage_custom")
             ],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_sell")]
         ])
@@ -352,12 +370,10 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
         choice = callback_query.data.split("_")[2]  # sell_slippage_X -> X
 
         if choice == "custom":
-            await callback_query.message.edit_text(
+            await callback_query.message.answer(
                 "⚙️ Пользовательский Slippage для продажи\n\n"
                 "Введите значение в процентах (например, 1.5):",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage")]
-                ])
+                reply_markup=ForceReply(selective=True)
             )
             await state.set_state(SellStates.waiting_for_slippage)
             return
@@ -383,31 +399,36 @@ async def handle_back_to_sell(callback_query: types.CallbackQuery, state: FSMCon
     logger.info("[SELL] Handling back_to_sell")
     data = await state.get_data()
     logger.info(f"[SELL] Current state data: {data}")
-    if data.get("menu_type") != "sell":
-        logger.warning(f"[SELL] Wrong menu type: {data.get('menu_type')}")
-        return
     await show_sell_menu(callback_query.message, state, session)
     logger.info("[SELL] Showed sell menu")
 
 
-@router.callback_query(lambda c: c.data.startswith("sell_"))
+@router.callback_query(lambda c: c.data.startswith("sell_"), flags={"priority": 8})
 async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle sell percentage buttons"""
     try:
         # Extract percentage from callback data
-        sell_type = callback_query.data.split("_")[1]
+        sell_type = callback_query.data.split("_", 1)[1]
+        print(sell_type)
 
         if sell_type == "initial":
             # Save special type to state
             await state.update_data(sell_percentage="initial")
             percentage = "initial"
+        elif sell_type == "set_gas_fee":
+            await callback_query.message.answer(
+                "⚙️ Пользовательский Gas Fee для покупки\n\n"
+                "Введите значение в SOL (например, 0.01):",
+                reply_markup=ForceReply(selective=True)  # Указываем, что требуется ответ
+            )
+            # Устанавливаем состояние для ожидания ввода пользователя
+            await state.set_state(SellStates.waiting_for_gas_fee)
+            return
         elif sell_type == "custom":
-            await callback_query.message.edit_text(
+            await callback_query.message.answer(
                 "⚙️ Процент для продажи\n\n"
                 "Введите значение в процентах (например, 50%):",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_sell")]
-                ])
+                reply_markup=ForceReply(selective=True)
             )
             await state.set_state(SellStates.waiting_for_percentage)
             return
@@ -419,7 +440,8 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
         # Update message with selected percentage
         data = await state.get_data()
         token_address = data.get("token_address")
-        slippage = data.get("slippage", 1.0)
+        slippage = data.get("slippage")
+        gas_fee = data.get('gas_fee')
 
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
@@ -428,11 +450,10 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             return
 
         user_id = get_real_user_id(callback_query)
-        stmt = select(User.last_buy_amount).where(User.id == user_id)
+        stmt = select(User.last_buy_amount).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         last_buy_amount = result.scalar()
-
-        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, percentage)
+        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, percentage, gas_fee)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -442,8 +463,8 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
-            f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
-            f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
+            f"• Renounced: {'✅️' if token_info.is_renounced else '✗'} "
+            f"Burnt: {'✅️' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
 
@@ -463,11 +484,13 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
     """Show sell menu with current token info and settings"""
     try:
         # Get current data
+
         data = await state.get_data()
         token_address = data.get("token_address")
         token_balance = data.get("token_balance", 0.0)
         sell_percentage = data.get("sell_percentage", 100)
         slippage = data.get("slippage", 1.0)
+        gas_fee = data.get("gas_fee")
 
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
@@ -480,22 +503,22 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
             )
             return
         user_id = get_real_user_id(message)
-        stmt = select(User.last_buy_amount).where(User.id == user_id)
+        stmt = select(User.last_buy_amount).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         last_buy_amount = result.scalar()
 
-        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage)
+        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage, gas_fee)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
-            f"💰 Баланс: {token_balance:.6f} токенов\n"
+            f"💰 Баланс: {_format_price(token_balance)} токенов\n"
             f"⚙️ Slippage: {slippage}%\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
-            f"• Renounced: {'✓' if token_info.is_renounced else '✗'} "
-            f"Burnt: {'✓' if token_info.is_burnt else '✗'}\n\n"
+            f"• Renounced: {'✅️' if token_info.is_renounced else '✗'} "
+            f"Burnt: {'✅️' if token_info.is_burnt else '✗'}\n\n"
             f"🔍 Анализ: [Pump](https://www.pump.fun/{token_address})"
         )
 
@@ -538,9 +561,7 @@ async def handle_custom_slippage(message: types.Message, state: FSMContext, sess
     except ValueError:
         await message.reply(
             "❌ Неверное значение. Введите число от 0.1 до 100:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_slippage")]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
 
 
@@ -562,16 +583,15 @@ async def handle_custom_percentage(message: types.Message, state: FSMContext, se
     except ValueError:
         await message.reply(
             "❌ Неверное значение. Введите число от 1 до 100:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_sell")]
-            ])
+            reply_markup=ForceReply(selective=True)
         )
 
 
 def get_sell_keyboard_list(
         slippage: float,
         last_buy_amount: float,
-        sell_percentage: float
+        sell_percentage: float | str,
+        gas_fee: float
 ):
     first_row = [[
         InlineKeyboardButton(text="🔴 Продать", callback_data="market_sell"),
@@ -589,7 +609,7 @@ def get_sell_keyboard_list(
         75,
         100,
     ]
-    buttons = [[f"Initial({last_buy_amount})"]] if last_buy_amount else []
+    buttons = []
     row = []
     chosen = False
     for i in range(len(values)):
@@ -601,13 +621,51 @@ def get_sell_keyboard_list(
             chosen = True
         row.append(
             InlineKeyboardButton(
-                text=f"✓ {val}%" if sell_percentage == val else f"{val}%",
+                text=f"✅️ {val}%" if sell_percentage == val else f"{val}%",
                 callback_data=f"sell_{val}"
             )
         )
     if row:
         buttons.append(row)
-
-    buttons[-1].append(InlineKeyboardButton(text=f"{'' if chosen else '✓' } Custom", callback_data="sell_custom"))
-
+    if sell_percentage == 'initial':
+        chosen = True
+    buttons[-1].append(InlineKeyboardButton(
+        text=f"{'' if chosen else '✅️ ' + str(sell_percentage) + '%'} Custom",
+        callback_data="sell_custom"))
+    if last_buy_amount:
+        buttons.append([InlineKeyboardButton(
+            text=f"Initial {'✅️' if sell_percentage == 'initial' else ''} {last_buy_amount} SOL ",
+            callback_data=f"sell_initial"
+        )])
+    buttons.append([InlineKeyboardButton(
+        text=f"🚀 Gas Fee {': ' + _format_price(gas_fee / 1e9) + ' SOL' if gas_fee else ''}",
+        callback_data=f"sell_set_gas_fee")])
     return InlineKeyboardMarkup(inline_keyboard=first_row + buttons + last_row)
+
+@router.message(SellStates.waiting_for_gas_fee)
+async def handle_custom_gas_fee(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Handle custom slippage input"""
+    try:
+        gas_fee = float(callback_query.text.replace(",", "."))
+        if gas_fee <= 0 or gas_fee > 10:
+            raise ValueError("Invalid gas_fee value")
+        gas_fee *= 1e9
+        user_id = get_real_user_id(callback_query)
+
+        sell_setting = await get_user_setting(user_id, 'sell', session)
+        sell_setting['gas_fee'] = gas_fee
+        await update_user_setting(user_id, 'sell', sell_setting, session)
+        await state.update_data(gas_fee=gas_fee)
+
+        # Отправляем новое сообщение об успешном изменении
+        status_message = await callback_query.answer(f"✅ Gas Fee установлен: {_format_price(gas_fee / 1e9)} SOL")
+
+        # Показываем обновленное меню покупки
+        await show_sell_menu(status_message, state, session)
+
+    except ValueError as e:
+        logger.error(f"[BUY] Invalid gas_fee value: {e}")
+        await callback_query.reply(
+            "❌ Неверное значение. Введите число от 0 до 10:",
+            reply_markup=ForceReply(selective=True)
+        )

@@ -20,7 +20,7 @@ from solana.transaction import Transaction
 import spl.token.instructions as spl_token
 from spl.token.instructions import get_associated_token_address
 from construct import Struct, Int64ul, Flag
-
+from solders.system_program import TransferParams, transfer
 from tenacity import (
     retry,
     wait_exponential,
@@ -30,6 +30,7 @@ from tenacity import (
 )
 
 from dotenv import load_dotenv
+import requests
 
 import httpx  # Используется в обработке исключений
 
@@ -54,6 +55,7 @@ load_dotenv()
 EXPECTED_DISCRIMINATOR = struct.pack("<Q", 6966180631402821399)
 TOKEN_DECIMALS = 6
 LAMPORTS_PER_SOL = 1_000_000_000
+url = "https://api.coinmarketcap.com/dexer/v3/dexer/search/main-site"
 
 
 class BondingCurveState:
@@ -94,27 +96,50 @@ class RateLimiter:
 
 
 # Инициализация RateLimiter: например, max 3 вызова в секунду
-rate_limiter = RateLimiter(max_calls=3, period=1.0)
+rate_limiter = RateLimiter(max_calls=1, period=1.0)  # More conservative rate limit
 
+# Добавляем глобальный rate limiter для всех клиентов
+global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
 
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
-    await rate_limiter.acquire()
-    return await request_func(*args, **kwargs)
-
+    """Send request with both per-client and global rate limiting"""
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await rate_limiter.acquire()
+            await global_rate_limiter.acquire()
+            return await request_func(*args, **kwargs)
+        except Exception as e:
+            if not is_rate_limit_error(e) or attempt == max_retries - 1:
+                raise
+            
+            # Exponential backoff
+            delay = base_delay * (2 ** attempt)
+            logger.info(f"Rate limit hit, retrying in {delay:.2f} seconds...")
+            await asyncio.sleep(delay)
+    
+    raise Exception("Failed after max retries")
 
 def is_rate_limit_error(exception):
-    """
-    Функция-предикат для проверки, является ли исключение ошибкой HTTP 429.
-    """
-    return (
-            isinstance(exception, httpx.HTTPStatusError) and
-            exception.response.status_code == 429
-    )
-
+    """Check if the exception is a rate limit error"""
+    if isinstance(exception, httpx.HTTPStatusError):
+        return exception.response.status_code == 429
+    # Also check for RPC node specific rate limit errors
+    if isinstance(exception, Exception):
+        error_msg = str(exception).lower()
+        return any(msg in error_msg for msg in [
+            "rate limit exceeded",
+            "too many requests",
+            "please slow down",
+            "429"
+        ])
+    return False
 
 class SolanaClient:
     def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
-        self.rpc_endpoint = os.getenv("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
+        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://solana-mainnet.core.chainstack.com/1477348d5255a5a82def1ba221b5a610")
         self.compute_unit_price = compute_unit_price
         self.client = AsyncClient(self.rpc_endpoint)
         self._private_key = private_key
@@ -196,7 +221,7 @@ class SolanaClient:
                 owner=self.payer.pubkey(),
                 mint=mint
             )
-            compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
+            compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
             tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
             tx_ata.recent_blockhash = (
                 await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
@@ -251,12 +276,12 @@ class SolanaClient:
                 logger.info(f"Attempting to send Buy transaction {attempt + 1} of {retries}")
 
                 discriminator = struct.pack("<Q", 16927863322537952870)
-                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10 ** 6))
-                max_amount_packed = struct.pack("<Q", params['max_amount_lamports'])
+                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10 ** TOKEN_DECIMALS))
+                max_amount_packed = struct.pack("<Q", int(params['max_amount_lamports']))
                 data = discriminator + token_amount_packed + max_amount_packed
 
                 buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
-                compute_budget_ix = set_compute_unit_price(self.compute_unit_price)
+                compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
 
                 tx_buy = Transaction().add(buy_ix).add(compute_budget_ix)
                 tx_buy.recent_blockhash = (
@@ -393,7 +418,7 @@ class SolanaClient:
             raise ValueError("Invalid reserves state")
 
         price = (curve_state.virtual_sol_reserves / LAMPORTS_PER_SOL) / (
-                    curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
+                curve_state.virtual_token_reserves / 10 ** TOKEN_DECIMALS)
         logger.info(f"Calculated token price: {price:.10f} SOL")
         return price
 
@@ -477,7 +502,7 @@ class SolanaClient:
 
                 recent_blockhash = await self.client.get_latest_blockhash()
                 transaction = Transaction()
-                transaction.add(sell_ix).add(set_compute_unit_price(self.compute_unit_price))
+                transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price)))
                 transaction.recent_blockhash = recent_blockhash.value.blockhash
                 transaction.fee_payer = self.payer.pubkey()
                 transaction.sign(self.payer)
@@ -684,13 +709,14 @@ class SolanaClient:
                 # logger.info(f"[CLIENT] Extracted token address: {token_address}")
 
                 for account_key in tx_info.value.transaction.transaction.message.account_keys:
-                    logger.info(f"[CLIENT] Account key: {account_key}")
+                    #logger.info(f"[CLIENT] Account key: {account_key}")
                     if check_mint(account_key):
                         token_address = account_key
                         logger.info(f"[CLIENT] Found token address: {token_address}")
                         break
                     else:
-                        logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+                        #logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+                        pass
 
             # Convert to dict before JSON serialization
             tx_info_dict = {
@@ -751,6 +777,131 @@ class SolanaClient:
             import traceback
             logger.error(f"[CLIENT] Traceback: {traceback.format_exc()}")
             return 0
+        
+    async def send_transfer_transaction(
+        self,
+        recipient_address: str,
+        amount_sol: float,
+        is_token_transfer: bool = False,
+        token_mint: Optional[Pubkey] = None,
+    ) -> Optional[str]:
+        """
+        Sends a transfer transaction (SOL or token).
+
+        Args:
+            recipient_address (str): The recipient's wallet address.
+            amount_sol (float): The amount to send (in SOL or tokens).
+            is_token_transfer (bool): Set to True for SPL token transfers.
+            token_mint (Optional[Pubkey]): The mint address of the token (required for token transfers).
+
+        Returns:
+            Optional[str]: The transaction signature, or None if the transfer failed.
+        """
+        try:
+            payer = self.load_keypair()
+            recipient = Pubkey.from_string(recipient_address)
+            transaction = Transaction()
+
+            if is_token_transfer:
+                if not token_mint:
+                    raise ValueError("Token mint address is required for token transfers")
+
+                associated_token_account = get_associated_token_address(recipient, token_mint)
+                payer_token_account = get_associated_token_address(payer.pubkey(), token_mint)
+
+                # Add SPL token transfer instruction
+                transfer_ix = spl_token.transfer(
+                    spl_token.TransferParams(
+                    source=payer_token_account,
+                    dest=associated_token_account,
+                    owner=payer.pubkey(),
+                    amount=int(amount_sol * (10 ** TOKEN_DECIMALS)),
+                    program_id=self.PUMP_PROGRAM,
+                    )
+                )
+                transaction.add(transfer_ix)
+
+            else:
+                # Add SOL transfer instruction
+                lamports = int(amount_sol * LAMPORTS_PER_SOL)
+                transfer_ix = transfer(
+                    TransferParams(
+                        from_pubkey=payer.pubkey(),
+                        to_pubkey=recipient,
+                        lamports=lamports
+                    )
+                )
+                transaction.add(transfer_ix)
+
+            # Fetch recent blockhash and prepare transaction
+            recent_blockhash = await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)
+            transaction.recent_blockhash = recent_blockhash.value.blockhash
+            transaction.fee_payer = payer.pubkey()
+            transaction.sign(payer)
+
+            # Send transaction
+            tx_signature = await send_request_with_rate_limit(
+                self.client,
+                self.client.send_transaction,
+                transaction,
+                payer,
+                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+            )
+            logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_signature.value}")
+
+            # Confirm transaction
+            await self.confirm_transaction_with_delay(tx_signature.value)
+            logger.info(f"Transaction confirmed: {tx_signature.value}")
+            return tx_signature.value
+
+        except Exception as e:
+            logger.error(f"Failed to send transfer transaction: {e}")
+            logger.error(traceback.format_exc())
+            return None
+        
+    async def token_info(self, mint: str):
+        params = {
+            "keyword": mint,
+            "all": "false"
+        }
+
+        timestamp = int(time.time())
+        user_agent = f"Custom/{timestamp}"
+
+        # Заголовки запроса
+        headers = {
+            "User-Agent": user_agent
+        }
+
+        try:
+            # Выполнение GET-запроса
+            response = requests.get(url, params=params, headers=headers)
+            
+            # Проверка успешности запроса
+            if response.status_code == 200:
+                # Вывод данных в формате JSON
+                data = response.json()
+                return data['data']['pairs'][0]
+            else:
+                print(f"Ошибка: {response.status_code}, {response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"Произошла ошибка при выполнении запроса: {e}")
+        
+    async def get_tokens(self, wallet_address) -> float:
+        token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
+        mints = []
+        for token_account in token_accounts:
+            last = (await self.client.get_signatures_for_address(token_account)).value[0]
+            print(f"Last signature: {last}")
+            transaction_info = await self.get_transaction(last.signature)
+            if transaction_info is not None:
+                mint = transaction_info.get('token_address')
+                ti = await self.token_info(mint)
+                mints.append((mint, ti.get('marketCap'), ti.get('baseToken')['name'], ti.get('baseToken')['symbol']))
+            else:
+                print(f"Failed to get transaction info for signature: {last}")
+        return mints
+                
 
 
 def check_mint(account: Pubkey) -> bool:
