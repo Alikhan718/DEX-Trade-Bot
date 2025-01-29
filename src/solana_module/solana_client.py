@@ -7,6 +7,9 @@ import sys
 import logging
 import traceback
 import time
+from functools import lru_cache
+from pprint import pprint
+
 from solana.rpc.types import TokenAccountOpts
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
@@ -139,7 +142,10 @@ def is_rate_limit_error(exception):
 
 class SolanaClient:
     def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
-        self.rpc_endpoint = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+        self.rpc_endpoint = os.getenv(f"SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+        api_key = os.getenv('API_KEY')
+        if api_key:
+            self.rpc_endpoint += f"/?api-key={api_key}"
         self.compute_unit_price = compute_unit_price
         self.client = AsyncClient(self.rpc_endpoint)
         self._private_key = private_key
@@ -423,24 +429,30 @@ class SolanaClient:
         return price
 
     async def get_account_tokens(self, account_pubkey: Pubkey) -> list:
-        """Gets list of tokens owned by the account."""
-        logger.info(f"Getting tokens for account: {account_pubkey}")
-        response = await send_request_with_rate_limit(self.client, self.client.get_token_accounts_by_owner,
-                                                      account_pubkey,
-                                                      TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM))
+        """Получает список токенов для данного кошелька."""
+        logger.info(f"Fetching tokens for {account_pubkey}")
+
+        response = await send_request_with_rate_limit(
+            self.client,
+            self.client.get_token_accounts_by_owner,
+            account_pubkey,  # <-- Исправлено: передаем адрес кошелька первым аргументом
+            TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM)  # <-- Второй аргумент - фильтр по токенам
+        )
 
         if not response.value:
             logger.info("No tokens found for this account")
             return []
 
-        tokens = []
-        for token_account in response.value:
-            token_pubkey = token_account.pubkey
-            token_info = await send_request_with_rate_limit(self.client, self.client.get_account_info, token_pubkey)
-            if token_info.value and token_info.value.data:
-                tokens.append(token_pubkey)
-        logger.info(f"Found {len(tokens)} tokens for account {account_pubkey}")
+        tokens = [token.pubkey for token in response.value]
+
+        logger.info(f"Found {len(tokens)} tokens for {account_pubkey}")
         return tokens
+
+
+    @lru_cache(maxsize=500)  # Кэширование до 500 результатов
+    async def get_token_info_cached(self, token_pubkey: str):
+        """Получает информацию о токене с кэшированием."""
+        return await send_request_with_rate_limit(self.client, self.client.get_account_info, token_pubkey)
 
     def derive_event_authority_pda(self, bonding_curve: Pubkey, mint: Pubkey) -> Pubkey:
         """
@@ -583,7 +595,7 @@ class SolanaClient:
         """
         try:
             # Получение информации о транзакции
-            transaction_info = await send_request_with_rate_limit(self.client, self.client.get_transaction, signature)
+            transaction_info = await send_request_with_rate_limit(self.client, self.client.get_transaction, signature, max_supported_transaction_version=0)
             if not transaction_info or not transaction_info.value:
                 logger.error("Не удалось получить данные транзакции.")
                 return
@@ -687,7 +699,8 @@ class SolanaClient:
             tx_info = await send_request_with_rate_limit(
                 self.client,
                 self.client.get_transaction,
-                signature_obj
+                signature_obj,
+                max_supported_transaction_version=0
             )
 
             if not tx_info or not tx_info.value:
@@ -886,7 +899,7 @@ class SolanaClient:
                 print(f"Ошибка: {response.status_code}, {response.text}")
         except requests.exceptions.RequestException as e:
             print(f"Произошла ошибка при выполнении запроса: {e}")
-        
+
     async def get_tokens(self, wallet_address) -> float:
         token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
         mints = []
@@ -897,11 +910,12 @@ class SolanaClient:
             if transaction_info is not None:
                 mint = transaction_info.get('token_address')
                 ti = await self.token_info(mint)
-                mints.append((mint, ti.get('marketCap'), ti.get('baseToken')['name'], ti.get('baseToken')['symbol']))
+                if ti:
+                    mints.append((mint, ti.get('marketCap'), ti.get('baseToken')['name'], ti.get('baseToken')['symbol']))
             else:
                 print(f"Failed to get transaction info for signature: {last}")
         return mints
-                
+
 
 
 def check_mint(account: Pubkey) -> bool:

@@ -1,4 +1,6 @@
 import logging
+import os
+import traceback
 from datetime import datetime
 from typing import Optional
 
@@ -16,6 +18,9 @@ class SolanaService:
         """Initialize Solana service"""
         self.rpc_urls = Config.SOLANA_RPC_URLS
         self.current_rpc_url = Config.SOLANA_RPC_URL
+        api_key = os.getenv('API_KEY')
+        if api_key:
+            self.current_rpc_url += f"/?api-key={api_key}"
         self.connection = AsyncClient(self.current_rpc_url)
         self.sol_price = 0
         self.last_price_update = None
@@ -54,6 +59,7 @@ class SolanaService:
                 return response.value / 1e9  # Convert lamports to SOL
             return 0
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Error getting wallet balance: {e}")
             return 0
 
