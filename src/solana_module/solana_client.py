@@ -108,7 +108,7 @@ global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
     """Send request with both per-client and global rate limiting"""
     max_retries = 5
-    base_delay = 1.0
+    base_delay = 0.5
 
     for attempt in range(max_retries):
         try:
@@ -435,9 +435,7 @@ class SolanaClient:
         """Получает список токенов для данного кошелька."""
         logger.info(f"Fetching tokens for {account_pubkey}")
 
-        response = await send_request_with_rate_limit(
-            self.client,
-            self.client.get_token_accounts_by_owner,
+        response = await self.client.get_token_accounts_by_owner(
             account_pubkey,
             TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM)
         )
@@ -574,19 +572,22 @@ class SolanaClient:
         except Exception as e:
             logger.error(f"Failed to execute Sell transaction: {e}")
 
-    async def get_token_balance(self, token_address: Pubkey) -> float:
+    async def get_token_balance(self, token_address: Pubkey, create_associated=True) -> float:
         """
         Gets token balance for the associated token account.
         Returns balance in decimal format.
         """
         try:
-            associated_token_account = await self.create_associated_token_account(token_address)
-            response = await send_request_with_rate_limit(self.client, self.client.get_token_account_balance,
-                                                          associated_token_account)
+
+            associated_token_account = None
+            if create_associated:
+                associated_token_account = await self.create_associated_token_account(token_address)
+            response = await self.client.get_token_account_balance(associated_token_account if create_associated else token_address)
             if response.value:
                 return float(response.value.amount) / 10 ** TOKEN_DECIMALS
             return 0
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Failed to get token balance: {e}")
             return 0
 
@@ -902,7 +903,7 @@ class SolanaClient:
         except requests.exceptions.RequestException as e:
             print(f"Произошла ошибка при выполнении запроса: {e}")
 
-    async def get_tokens(self, wallet_address: str) -> list:
+    async def get_tokens(self, wallet_address: str, tx_handler=None) -> list:
         """Оптимизированный метод получения токенов кошелька."""
         token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
 
@@ -944,7 +945,6 @@ class SolanaClient:
 
         # Запрашиваем всю информацию о токенах параллельно
         token_infos = await asyncio.gather(*token_tasks, return_exceptions=True)
-        print(token_accounts, token_infos)
         for mint, ti in zip(token_accounts, token_infos):
             if isinstance(ti, Exception):
                 logger.error(f"Skipping token {mint} due to token_info fetch error: {ti}")
@@ -959,8 +959,19 @@ class SolanaClient:
                 token_symbol = ti["baseToken"].get("symbol", "Unknown")
                 address = ti["baseToken"].get("address")
                 market_cap = ti.get("marketCap", 0)
-                mints.append((address, market_cap, token_name, token_symbol))
+                priceUsd = float(ti.get("priceUsd"))
+                print(address)
+                append = True
+                balance = 0
+                if tx_handler:
+                    balance = await tx_handler.client.get_token_balance(Pubkey.from_string(address))
+                    if not balance:
+                        append = False
+                    balance *= priceUsd
+                if append:
+                    mints.append((address, market_cap, token_name, token_symbol, balance))
             except (KeyError, TypeError) as e:
+                traceback.print_exc()
                 logger.error(f"Error extracting token info for {mint}: {e}")
 
         return mints

@@ -56,7 +56,8 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
         solana_client = SolanaClient(compute_unit_price=100000)  # Default compute unit price
         
         # Get user's tokens
-        tokens = await solana_client.get_tokens(user.solana_wallet)
+        tx_handler = UserTransactionHandler(user.private_key, 10000000)
+        tokens = await solana_client.get_tokens(user.solana_wallet, tx_handler)
         
         if not tokens:
             await callback_query.message.edit_text(
@@ -69,10 +70,10 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
 
         # Create keyboard with tokens
         keyboard = []
-        for token_address, market_cap, name, symbol in tokens:
+        for token_address, market_cap, name, symbol, balance in tokens:
             keyboard.append([
                 InlineKeyboardButton(
-                    text=f"💎 {symbol} ({name})", 
+                    text=f"💎 {symbol} ({name} - ${_format_price(balance)})",
                     callback_data=f"select_token_{token_address}"
                 )
             ])
@@ -105,8 +106,31 @@ async def handle_token_selection(callback_query: types.CallbackQuery, state: FSM
         token_address = callback_query.data.replace("select_token_", "")
         
         # Store token address in state
-        await state.update_data(token_address=token_address)
-        
+        user_id = get_real_user_id(callback_query)
+        stmt = await session.execute(select(User).where(User.telegram_id == user_id))
+        user = stmt.unique().scalar_one_or_none()
+        tx_handler = UserTransactionHandler(user.private_key, 10000000)
+        token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
+
+        mint = Pubkey.from_string(token_address)
+        bonding_curve, _ = get_bonding_curve_address(mint, tx_handler.client.PUMP_PROGRAM)
+        associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve)
+
+        # Save token data to state
+        sell_setting = await get_user_setting(user_id, 'sell', session)
+        slippage = sell_setting['slippage']
+        gas_fee = sell_setting['gas_fee']
+        await state.update_data({
+            'token_address': token_address,
+            'bonding_curve': str(bonding_curve),
+            'associated_bonding_curve': str(associated_bonding_curve),
+            'token_balance': token_balance,
+            'operation_context': 'sell',  # Set operation context to sell
+            'sell_percentage': 100,  # Default to 100%
+            'slippage': slippage,  # Default slippage
+            'gas_fee': gas_fee
+        })
+
         # Show sell menu for selected token
         await show_sell_menu(callback_query.message, state, session)
         
@@ -157,9 +181,8 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             sell_settings = await get_user_setting(user_id, 'sell', session)
             tx_handler = UserTransactionHandler(user.private_key, sell_settings['gas_fee'])
             token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
-            token_balance_decimal = float(token_balance) if token_balance else 0.0
 
-            if token_balance_decimal <= 0:
+            if token_balance <= 0:
                 await message.reply(
                     "❌ У вас нет этого токена",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -191,7 +214,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             'token_address': token_address,
             'bonding_curve': str(bonding_curve),
             'associated_bonding_curve': str(associated_bonding_curve),
-            'token_balance': token_balance_decimal,
+            'token_balance': token_balance,
             'operation_context': 'sell',  # Set operation context to sell
             'sell_percentage': 100,  # Default to 100%
             'slippage': slippage,  # Default slippage
@@ -216,7 +239,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
-            f"💰 Баланс: {_format_price(token_balance_decimal)} токенов\n"
+            f"💰 Баланс: {_format_price(token_balance)} токенов (${_format_price(token_balance * token_info.price_usd)})\n"
             f"⚙️ Slippage: {slippage}%\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
@@ -566,7 +589,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
-            f"💰 Баланс: {_format_price(token_balance)} токенов\n"
+            f"💰 Баланс: {_format_price(token_balance)} токенов (${_format_price(token_balance * token_info.price_usd)})\n"
             f"⚙️ Slippage: {slippage}%\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
