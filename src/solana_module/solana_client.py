@@ -104,11 +104,12 @@ rate_limiter = RateLimiter(max_calls=1, period=1.0)  # More conservative rate li
 # Добавляем глобальный rate limiter для всех клиентов
 global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
 
+
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
     """Send request with both per-client and global rate limiting"""
     max_retries = 5
     base_delay = 1.0
-    
+
     for attempt in range(max_retries):
         try:
             await rate_limiter.acquire()
@@ -117,13 +118,14 @@ async def send_request_with_rate_limit(client: AsyncClient, request_func, *args,
         except Exception as e:
             if not is_rate_limit_error(e) or attempt == max_retries - 1:
                 raise
-            
+
             # Exponential backoff
             delay = base_delay * (2 ** attempt)
             logger.info(f"Rate limit hit, retrying in {delay:.2f} seconds...")
             await asyncio.sleep(delay)
-    
+
     raise Exception("Failed after max retries")
+
 
 def is_rate_limit_error(exception):
     """Check if the exception is a rate limit error"""
@@ -139,6 +141,7 @@ def is_rate_limit_error(exception):
             "429"
         ])
     return False
+
 
 class SolanaClient:
     def __init__(self, compute_unit_price: int, private_key: Optional[str] = None):
@@ -435,8 +438,8 @@ class SolanaClient:
         response = await send_request_with_rate_limit(
             self.client,
             self.client.get_token_accounts_by_owner,
-            account_pubkey,  # <-- Исправлено: передаем адрес кошелька первым аргументом
-            TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM)  # <-- Второй аргумент - фильтр по токенам
+            account_pubkey,
+            TokenAccountOpts(program_id=self.SYSTEM_TOKEN_PROGRAM)
         )
 
         if not response.value:
@@ -444,10 +447,8 @@ class SolanaClient:
             return []
 
         tokens = [token.pubkey for token in response.value]
-
         logger.info(f"Found {len(tokens)} tokens for {account_pubkey}")
         return tokens
-
 
     @lru_cache(maxsize=500)  # Кэширование до 500 результатов
     async def get_token_info_cached(self, token_pubkey: str):
@@ -595,7 +596,8 @@ class SolanaClient:
         """
         try:
             # Получение информации о транзакции
-            transaction_info = await send_request_with_rate_limit(self.client, self.client.get_transaction, signature, max_supported_transaction_version=0)
+            transaction_info = await send_request_with_rate_limit(self.client, self.client.get_transaction, signature,
+                                                                  max_supported_transaction_version=0)
             if not transaction_info or not transaction_info.value:
                 logger.error("Не удалось получить данные транзакции.")
                 return
@@ -722,13 +724,13 @@ class SolanaClient:
                 # logger.info(f"[CLIENT] Extracted token address: {token_address}")
 
                 for account_key in tx_info.value.transaction.transaction.message.account_keys:
-                    #logger.info(f"[CLIENT] Account key: {account_key}")
+                    # logger.info(f"[CLIENT] Account key: {account_key}")
                     if check_mint(account_key):
                         token_address = account_key
                         logger.info(f"[CLIENT] Found token address: {token_address}")
                         break
                     else:
-                        #logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+                        # logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
                         pass
 
             # Convert to dict before JSON serialization
@@ -790,13 +792,13 @@ class SolanaClient:
             import traceback
             logger.error(f"[CLIENT] Traceback: {traceback.format_exc()}")
             return 0
-        
+
     async def send_transfer_transaction(
-        self,
-        recipient_address: str,
-        amount_sol: float,
-        is_token_transfer: bool = False,
-        token_mint: Optional[Pubkey] = None,
+            self,
+            recipient_address: str,
+            amount_sol: float,
+            is_token_transfer: bool = False,
+            token_mint: Optional[Pubkey] = None,
     ) -> Optional[str]:
         """
         Sends a transfer transaction (SOL or token).
@@ -825,11 +827,11 @@ class SolanaClient:
                 # Add SPL token transfer instruction
                 transfer_ix = spl_token.transfer(
                     spl_token.TransferParams(
-                    source=payer_token_account,
-                    dest=associated_token_account,
-                    owner=payer.pubkey(),
-                    amount=int(amount_sol * (10 ** TOKEN_DECIMALS)),
-                    program_id=self.PUMP_PROGRAM,
+                        source=payer_token_account,
+                        dest=associated_token_account,
+                        owner=payer.pubkey(),
+                        amount=int(amount_sol * (10 ** TOKEN_DECIMALS)),
+                        program_id=self.PUMP_PROGRAM,
                     )
                 )
                 transaction.add(transfer_ix)
@@ -871,7 +873,7 @@ class SolanaClient:
             logger.error(f"Failed to send transfer transaction: {e}")
             logger.error(traceback.format_exc())
             return None
-        
+
     async def token_info(self, mint: str):
         params = {
             "keyword": mint,
@@ -889,7 +891,7 @@ class SolanaClient:
         try:
             # Выполнение GET-запроса
             response = requests.get(url, params=params, headers=headers)
-            
+
             # Проверка успешности запроса
             if response.status_code == 200:
                 # Вывод данных в формате JSON
@@ -900,22 +902,68 @@ class SolanaClient:
         except requests.exceptions.RequestException as e:
             print(f"Произошла ошибка при выполнении запроса: {e}")
 
-    async def get_tokens(self, wallet_address) -> float:
+    async def get_tokens(self, wallet_address: str) -> list:
+        """Оптимизированный метод получения токенов кошелька."""
         token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
-        mints = []
-        for token_account in token_accounts:
-            last = (await self.client.get_signatures_for_address(token_account)).value[0]
-            print(f"Last signature: {last}")
-            transaction_info = await self.get_transaction(last.signature)
-            if transaction_info is not None:
-                mint = transaction_info.get('token_address')
-                ti = await self.token_info(mint)
-                if ti:
-                    mints.append((mint, ti.get('marketCap'), ti.get('baseToken')['name'], ti.get('baseToken')['symbol']))
-            else:
-                print(f"Failed to get transaction info for signature: {last}")
-        return mints
 
+        if not token_accounts:
+            return []
+
+        # Получаем последние транзакции для всех токенов ПАРАЛЛЕЛЬНО
+        signature_tasks = [self.client.get_signatures_for_address(token) for token in token_accounts]
+        signatures = await asyncio.gather(*signature_tasks, return_exceptions=True)
+
+        # Извлекаем последние подписи, если они есть
+        last_signatures = [
+            sig.value[0].signature for sig in signatures if hasattr(sig, "value") and sig.value
+        ]
+
+        if not last_signatures:
+            logger.info("No transactions found for tokens.")
+            return []
+
+        # Параллельно запрашиваем информацию о транзакциях
+        transaction_tasks = [self.get_transaction(sig) for sig in last_signatures]
+        transactions = await asyncio.gather(*transaction_tasks, return_exceptions=True)
+
+        mints = []
+        token_tasks = []
+
+        for mint, tx in zip(token_accounts, transactions):
+            if isinstance(tx, Exception):
+                logger.error(f"Skipping token {mint} due to transaction fetch error: {tx}")
+                continue
+
+            token_address = tx.get("token_address") if tx else None
+            if not token_address:
+                logger.error(f"Skipping token {mint} due to missing token_address in transaction")
+                continue
+
+            # Создаем асинхронную задачу для получения информации о токене
+            token_tasks.append(self.token_info(token_address))
+
+        # Запрашиваем всю информацию о токенах параллельно
+        token_infos = await asyncio.gather(*token_tasks, return_exceptions=True)
+        print(token_accounts, token_infos)
+        for mint, ti in zip(token_accounts, token_infos):
+            if isinstance(ti, Exception):
+                logger.error(f"Skipping token {mint} due to token_info fetch error: {ti}")
+                continue
+
+            if not isinstance(ti, dict) or "baseToken" not in ti:
+                logger.error(f"Skipping token {mint} due to unexpected token_info format: {ti}")
+                continue
+
+            try:
+                token_name = ti["baseToken"].get("name", "Unknown")
+                token_symbol = ti["baseToken"].get("symbol", "Unknown")
+                address = ti["baseToken"].get("address")
+                market_cap = ti.get("marketCap", 0)
+                mints.append((address, market_cap, token_name, token_symbol))
+            except (KeyError, TypeError) as e:
+                logger.error(f"Error extracting token info for {mint}: {e}")
+
+        return mints
 
 
 def check_mint(account: Pubkey) -> bool:
