@@ -136,9 +136,9 @@ class SolanaDEXBot:
                 await self.engine.dispose()
 
             # Close all RPC clients
-            if hasattr(self, 'smart_money_tracker'):
-                for client in self.smart_money_tracker.rpc_clients:
-                    await client.close()
+            # if hasattr(self, 'smart_money_tracker'):
+            #     for client in self.smart_money_tracker.rpc_clients:
+            #         await client.close()
 
 
 async def main():
