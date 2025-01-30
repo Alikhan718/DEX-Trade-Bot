@@ -25,7 +25,7 @@ class BotRestartHandler(FileSystemEventHandler):
             return
 
         # Игнорируем изменения в папке venv
-        if 'venv' in event.src_path:
+        if 'venv' in event.src_path or 'out' in event.src_path:
             return
 
         # Проверяем только Python файлы
