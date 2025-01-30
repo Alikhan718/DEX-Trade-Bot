@@ -353,6 +353,18 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             # Calculate token amount from SOL amount and price
             token_amount = amount_sol / token_price_sol
 
+            trade = Trade(
+                user_id=user.id,
+                token_address=token_address,
+                amount=token_amount,
+                price_usd=token_price_sol,
+                amount_sol=amount_sol,
+                created_at=datetime.now(),
+                transaction_type=0,
+                status="SUCCESS",
+                gas_fee=buy_settings['gas_fee'],
+                transaction_hash=tx_signature,
+            )
             # Update success message
             await status_message.edit_text(
                 "✅ Токен успешно куплен!\n\n"
@@ -373,10 +385,10 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
                 price_usd=token_price_sol,
                 amount_sol=amount_sol,
                 created_at=datetime.now(),
-                transaction_type=TransactionType.BUY,
+                transaction_type=0,
                 status="SUCCESS",
                 gas_fee=buy_settings['gas_fee'],
-                transaction_hash=tx_signature,
+                transaction_hash=str(tx_signature),
             )
             session.add(trade)
             await session.commit()
@@ -1345,7 +1357,7 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
         await state.clear()
 
 
-@router.message()
+@router.message(F.text.len() == 44)
 async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession,
                           solana_service: SolanaService):
     """Автоматическая покупка при получении mint адреса"""
