@@ -162,7 +162,7 @@ async def show_copy_settings(callback: CallbackQuery, session: AsyncSession, cop
     ct_pnl = Decimal(0)
     if len(ctt_list):
         ct_pnl = sum([
-            Decimal(ctt.amount_sol) * (Decimal(1) if ctt.transaction_type == "SELL" else Decimal(-1)) for ctt in ctt_list
+            Decimal(ctt.amount_sol or 0) * (Decimal(1) if ctt.transaction_type == "SELL" else Decimal(-1)) for ctt in ctt_list
         ])
     keyboard = await get_copy_trade_settings_keyboard(ct.id, session)
 
@@ -343,7 +343,7 @@ async def handle_copy_trade_settings_edit_base(
         ct_pnl = Decimal(0)
         if len(ctt_list):
             ct_pnl = sum([
-                Decimal(ctt.amount_sol) * (Decimal(1) if ctt.transaction_type == "SELL" else Decimal(-1)) for ctt in ctt_list
+                Decimal(ctt.amount_sol or 0) * (Decimal(1) if ctt.transaction_type == "SELL" else Decimal(-1)) for ctt in ctt_list
             ])
         await message.answer(
             f"⚙️ Настройки Copy Trading\n\n" +
