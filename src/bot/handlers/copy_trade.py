@@ -1,6 +1,9 @@
 import logging
+import time
 import traceback
-from pprint import pprint
+import uuid
+
+from _decimal import Decimal
 from aiogram import types
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
@@ -9,7 +12,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.bot.handlers.buy import _format_price
-from src.database.models import CopyTrade, ExcludedToken, User
+from src.bot.utils import get_real_user_id
+from src.database.models import CopyTrade, ExcludedToken, User, CopyTradeTransaction
 from src.bot.services.copy_trade_service import CopyTradeService
 from src.bot.states import CopyTradeStates
 
@@ -146,14 +150,28 @@ async def show_copy_settings(callback: CallbackQuery, session: AsyncSession, cop
     if not ct:
         await callback.answer("Копитрейд не найден", show_alert=True)
         return
-
+    stmt = await session.execute(
+        select(
+            CopyTradeTransaction
+        ).where(
+            CopyTradeTransaction.copy_trade_id == copy_trade_id
+        )
+    )
+    ctt_list = stmt.unique().scalars().all()
+    print([ctt.amount_sol for ctt in ctt_list ])
+    ct_pnl = Decimal(0)
+    if len(ctt_list):
+        ct_pnl = sum([
+            Decimal(ctt.amount_sol) * (Decimal(1) if ctt.transaction_type == "SELL" else Decimal(-1)) for ctt in ctt_list
+        ])
     keyboard = await get_copy_trade_settings_keyboard(ct.id, session)
 
     await callback.message.edit_text(
         f"⚙️ Настройки Copy Trading\n\n"
-        f"📋 Название: {ct.name if ct.name else '(Не задано)'}\n"
-        f"👛 Кошелек: {ct.wallet_address[:6]}...{ct.wallet_address[-4:]}\n"
-        f"📊 Статус: {'Активен ✅' if ct.is_active else 'Неактивен 🔴'}\n\n"
+        f"📋 Название: {ct.name if ct.name else '(Не задано)'}\n" +
+        f"👛 Кошелек: {ct.wallet_address[:6]}...{ct.wallet_address[-4:]}\n" +
+        f"📊 Статус: {'Активен ✅' if ct.is_active else 'Неактивен 🔴'}\n\n" +
+        (f"{'📉' if ct_pnl < 0 else '📈'} PNL: {_format_price(ct_pnl)} SOL\n\n" if len(ctt_list) else "") +
         "Выберите параметр для настройки:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
@@ -313,12 +331,26 @@ async def handle_copy_trade_settings_edit_base(
 
         # Показываем обновленное меню настроек
         keyboard = await get_copy_trade_settings_keyboard(copy_trade_id, session)
-
+        stmt = await session.execute(
+            select(
+                CopyTradeTransaction
+            ).where(
+                CopyTradeTransaction.copy_trade_id == copy_trade_id
+            )
+        )
+        ctt_list = stmt.unique().scalars().all()
+        print([ctt.amount_sol for ctt in ctt_list ])
+        ct_pnl = Decimal(0)
+        if len(ctt_list):
+            ct_pnl = sum([
+                Decimal(ctt.amount_sol) * (Decimal(1) if ctt.transaction_type == "SELL" else Decimal(-1)) for ctt in ctt_list
+            ])
         await message.answer(
-            f"⚙️ Настройки Copy Trading\n\n"
-            f"📋 Название: {item.name if item.name else '(Не задано)'}\n"
-            f"👛 Кошелек: {item.wallet_address[:6]}...{item.wallet_address[-4:]}\n"
-            f"📊 Статус: {'Активен ✅' if item.is_active else 'Неактивен 🔴'}\n\n"
+            f"⚙️ Настройки Copy Trading\n\n" +
+            f"📋 Название: {item.name if item.name else '(Не задано)'}\n" +
+            f"👛 Кошелек: {item.wallet_address[:6]}...{item.wallet_address[-4:]}\n" +
+            f"📊 Статус: {'Активен ✅' if item.is_active else 'Неактивен 🔴'}\n\n" +
+            (f"{'📉' if ct_pnl < 0 else '📈'} PNL: {_format_price(ct_pnl)} SOL\n\n" if len(ctt_list) else "") +
             "Выберите параметр для настройки:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
@@ -482,11 +514,9 @@ async def handle_delete_copy_trade(callback: CallbackQuery, session: AsyncSessio
 @router.callback_query(F.data == "ct_add_excluded")
 async def start_add_excluded_token(callback: CallbackQuery, state: FSMContext):
     """Начать процесс добавления исключенного токена"""
-    await callback.message.edit_text(
+    await callback.message.answer(
         "Введите адрес токена, который нужно исключить:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="ct_exclude_tokens")]
-        ])
+        reply_markup=ForceReply(selective=True)
     )
     await state.set_state(CopyTradeStates.ENTER_EXCLUDED_TOKEN)
 
@@ -499,16 +529,27 @@ async def handle_excluded_token_input(message: Message, state: FSMContext, sessi
     if len(token_address) != 44:
         await message.reply(
             "❌ Неверный формат адреса. Адрес должен состоять из 44 символов.",
+            reply_markup=ForceReply(selective=True)
+        )
+        return
+    telegram_id = get_real_user_id(message)
+    stmt = await session.execute(
+        select(User)
+        .where(User.telegram_id == telegram_id)
+    )
+    user = stmt.unique().scalar_one_or_none()
+    if not user:
+        await message.reply(
+            "❌ Пользователь не найден, создайте его через команду /start.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Отмена", callback_data="ct_exclude_tokens")]
             ])
         )
         return
-
     # Проверяем, не исключен ли уже этот токен
     exists = await session.scalar(
         select(ExcludedToken)
-        .where(ExcludedToken.user_id == message.from_user.id)
+        .where(ExcludedToken.user_id == user.id)
         .where(ExcludedToken.token_address == token_address)
     )
 
@@ -523,7 +564,7 @@ async def handle_excluded_token_input(message: Message, state: FSMContext, sessi
 
     # Добавляем токен в исключения
     new_excluded = ExcludedToken(
-        user_id=message.from_user.id,
+        user_id=user.id,
         token_address=token_address
     )
 
@@ -531,8 +572,17 @@ async def handle_excluded_token_input(message: Message, state: FSMContext, sessi
     await session.commit()
 
     await state.clear()
+    success_message = await message.reply(f"✅ {token_address[:6]}...{token_address[-4:]} исключен из списка токенов.")
+
+    fake_callback_query = CallbackQuery(
+        id=str(uuid.uuid4())[:8],                           # любое уникальное значение
+        from_user=message.from_user,            # в aiogram 3 поле называется from_user
+        message=success_message,
+        chat_instance=str(message.chat.id),     # или любой другой осмысленный текст
+        data="ct_exclude_tokens"                # именно data=..., а не callback_data=...
+    )
     await show_excluded_tokens(
-        callback=CallbackQuery(message=message, data="ct_exclude_tokens"),
+        callback=fake_callback_query,
         session=session
     )
 
@@ -542,8 +592,26 @@ async def handle_remove_excluded_token(callback: CallbackQuery, session: AsyncSe
     """Обработка удаления исключенного токена"""
     token_id = int(callback.data.split(":")[1])
 
+    telegram_id = get_real_user_id(callback)
+    stmt = await session.execute(
+        select(User)
+        .where(User.telegram_id == telegram_id)
+    )
+    user = stmt.unique().scalar_one_or_none()
+    if not user:
+        await callback.answer(
+            "❌ Пользователь не найден, создайте его через команду /start.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="ct_exclude_tokens")]
+            ])
+        )
+        return
     result = await session.execute(
-        select(ExcludedToken).where(ExcludedToken.id == token_id)
+        select(ExcludedToken)
+        .where(
+            ExcludedToken.id == token_id,
+            ExcludedToken.user_id == user.id
+        )
     )
     token = result.scalar_one_or_none()
 
@@ -562,14 +630,27 @@ async def handle_remove_excluded_token(callback: CallbackQuery, session: AsyncSe
 @router.callback_query(F.data == "ct_exclude_tokens")
 async def show_excluded_tokens(callback: CallbackQuery, session: AsyncSession):
     """Показать меню исключенных токенов"""
-    user_id = callback.from_user.id
 
+    telegram_id = get_real_user_id(callback)
+    stmt = await session.execute(
+        select(User)
+        .where(User.telegram_id == telegram_id)
+    )
+    user = stmt.unique().scalar_one_or_none()
+    if not user:
+        await callback.answer(
+            "❌ Пользователь не найден, создайте его через команду /start.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="ct_exclude_tokens")]
+            ])
+        )
+        return
     result = await session.execute(
         select(ExcludedToken)
-        .where(ExcludedToken.user_id == user_id)
+        .where(ExcludedToken.user_id == user.id)
         .order_by(ExcludedToken.created_at)
     )
-    excluded_tokens = result.scalars().all()
+    excluded_tokens = result.unique().scalars().all()
 
     keyboard = []
 
@@ -680,10 +761,10 @@ async def handle_address_input(message: Message, state: FSMContext, session: Asy
     keyboard = await get_copy_trade_settings_keyboard(new_copy_trade.id, session)
 
     await message.reply(
-        f"⚙️ Настройки Copy Trading\n\n"
-        f"📋 Название: {new_copy_trade.name}\n"
-        f"👛 Кошелек: {new_copy_trade.wallet_address[:6]}...{new_copy_trade.wallet_address[-4:]}\n"
-        f"📊 Статус: {'Активен ✅' if new_copy_trade.is_active else 'Неактивен 🔴'}\n\n"
+        f"⚙️ Настройки Copy Trading\n\n" +
+        f"📋 Название: {new_copy_trade.name if new_copy_trade.name else '(Не задано)'} \n" +
+        f"👛 Кошелек: {new_copy_trade.wallet_address[:6]}...{new_copy_trade.wallet_address[-4:]}\n" +
+        f"📊 Статус: {'Активен ✅' if new_copy_trade.is_active else 'Неактивен 🔴'}\n\n" +
         "Выберите параметр для настройки:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )

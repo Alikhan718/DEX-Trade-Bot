@@ -78,7 +78,7 @@ class AsyncLimitOrders:
             f"📉 Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
             f"🔖 Токен: {token_info.symbol}\n"
             f"⚙️ Slippage: {order.slippage}%\n"
-            f"🕒 Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"🕒 Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')} (UTC+0)"
         )
     
     async def error_limit_order(self, session: AsyncSession, order_id: int):
@@ -112,12 +112,12 @@ class AsyncLimitOrders:
         # Отправляем уведомление
         await self.bot.send_message(
             user.telegram_id,
-            f"�� Ошибочный лимитный ордер #{order_id}\n"
-            f"�� Сумма: {_format_price(order.amount_sol)} SOL\n"
-            f"�� Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
-            f"�� Токен: {token_info.symbol}\n"
-            f"���️ Slippage: {order.slippage}%\n"
-            f"�� Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"❌ Ошибочный лимитный ордер #{order_id}\n"
+            f"💰 Сумма: {_format_price(order.amount_sol)} SOL\n"
+            f"📉 Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
+            f"🔖 Токен: {token_info.symbol}\n"
+            f"⚙️ Slippage: {order.slippage}%\n"
+            f"🕒 Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')} (UTC+0)"
         )
 
     async def execute_order(self, order: LimitOrder, session: AsyncSession) -> bool:

@@ -8,7 +8,7 @@ from solders.pubkey import Pubkey
 
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
-from src.database.models import User
+from src.database.models import User, Trade, TransactionType
 from .buy import _format_price
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
@@ -368,6 +368,20 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
                 ])
             )
+            trade = Trade(
+                user_id=user.id,
+                token_address=token_address,
+                amount=amount_tokens,
+                price_usd=current_price_sol,
+                amount_sol=amount_tokens * current_price_sol,
+                created_at=datetime.now(),
+                transaction_type=TransactionType.SELL,
+                status="SUCCESS",
+                gas_fee=sell_settings['gas_fee'],
+                transaction_hash=tx_signature,
+            )
+            session.add(trade)
+            await session.commit()
         else:
             logger.error("Sell transaction failed: No signature returned")
             # Update error message

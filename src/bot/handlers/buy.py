@@ -1,4 +1,5 @@
 import traceback
+from datetime import datetime
 from pprint import pprint
 
 import logging
@@ -13,7 +14,7 @@ from typing import Union
 
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
-from src.database.models import User, LimitOrder
+from src.database.models import User, LimitOrder, Trade, TransactionType
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.bot.states import BuyStates, AutoBuySettingsStates, LimitBuyStates
@@ -365,6 +366,20 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
                 ])
             )
+            trade = Trade(
+                user_id=user.id,
+                token_address=token_address,
+                amount=token_amount,
+                price_usd=token_price_sol,
+                amount_sol=amount_sol,
+                created_at=datetime.now(),
+                transaction_type=TransactionType.BUY,
+                status="SUCCESS",
+                gas_fee=buy_settings['gas_fee'],
+                transaction_hash=tx_signature,
+            )
+            session.add(trade)
+            await session.commit()
         else:
             logger.error("Buy transaction failed")
             # Update error message
@@ -1504,7 +1519,7 @@ async def show_limit_orders(callback_query: types.CallbackQuery, session: AsyncS
                 f"📈 Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
                 f"💎 Токен: {token_info.symbol}\n"
                 f"⚙️ Slippage: {order.slippage}%\n"
-                f"📅 Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"📅 Создан: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')} (UTC+0)\n"
                 "➖➖➖➖➖➖➖➖➖➖\n\n"
             )
 
