@@ -1,5 +1,5 @@
-import traceback
 import time
+import traceback
 
 import logging
 from typing import Dict, Set, Optional
@@ -9,8 +9,6 @@ from solders.signature import Signature
 import json
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-
-from src.bot.handlers.buy import _format_price
 
 from .solana_monitor import SolanaMonitor
 from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User
@@ -163,143 +161,318 @@ class CopyTradeManager:
                     await session.commit()
                     await session.refresh(new_transaction)
                     logger.info(f"[MANAGER] Created new transaction record {new_transaction.id}")
-                    
-                    # Получаем пользователя для проверки баланса
-                    user = await session.scalar(
-                        select(User).where(User.id == trade.user_id)
-                    )
-                    if not user or not user.solana_wallet:
-                        logger.error(f"[MANAGER] User {trade.user_id} not found or no wallet")
-                        new_transaction.status = "FAILED"
-                        new_transaction.error = "User wallet not found"
-                        await session.commit()
-                        continue
 
-                    # Получаем private key пользователя
-                    private_key = user.private_key
-                    if not private_key:
-                        logger.error(f"[MANAGER] No private key found for user {trade.user_id}")
-                        new_transaction.status = "FAILED"
-                        new_transaction.error = "No private key found"
-                        await session.commit()
-                        continue
-
-                    logger.info(f"[MANAGER] Retrieved private key for user {trade.user_id}")
-                    logger.debug(f"[MANAGER] Private key string length: {len(private_key)}")
-
-                    # Создаем новый экземпляр клиента с private key пользователя
                     try:
-                        logger.info(f"[MANAGER] Creating new SolanaClient instance for user {trade.user_id}")
-
-                        # Проверяем формат private key
-                        try:
-                            key_parts = private_key.split(',')
-                            logger.debug(f"[MANAGER] Split private key into {len(key_parts)} parts")
-
-                            # Пробуем сконвертировать в числа
-                            key_bytes = [int(i) for i in key_parts]
-                            logger.debug(f"[MANAGER] Converted to bytes array with length: {len(key_bytes)}")
-
-                            if len(key_bytes) != 64:
-                                raise ValueError(f"Invalid key length: {len(key_bytes)} (expected 64)")
-
-                        except Exception as e:
-                            logger.error(f"[MANAGER] Invalid private key format: {str(e)}")
+                        # Получаем информацию о транзакции лидера
+                        tx_info = await self.solana_client.get_transaction(signature_obj)
+                        if not tx_info:
+                            logger.error(f"[MANAGER] Failed to get transaction info for {signature}")
                             new_transaction.status = "FAILED"
-                            new_transaction.error = f"Invalid private key format: {str(e)}"
+                            new_transaction.error = "Failed to get transaction info"
+                            await session.commit()
+                            continue
+                        logger.info(f"[MANAGER] Retrieved transaction info")
+
+                        if tx_type == "SELL":
+                            # Для SELL транзакций нам нужно получить баланс токенов пользователя
+                            try:
+                                token_balance = await user_client.get_token_balance(Pubkey.from_string(token_address))
+                                logger.info(f"[MANAGER] User token balance: {token_balance}")
+
+                                if token_balance <= 0:
+                                    logger.error(f"[MANAGER] User has no tokens to sell")
+                                    new_transaction.status = "FAILED"
+                                    new_transaction.error = "No tokens to sell"
+                                    await session.commit()
+                                    continue
+
+                                # Рассчитываем количество токенов для продажи
+                                token_amount = token_balance * (trade.copy_percentage / 100)
+                                logger.info(
+                                    f"[MANAGER] Calculated token amount to sell: {token_amount} ({trade.copy_percentage}%)")
+
+                                # Проверяем минимальную сумму в SOL после конвертации
+                                curve_state = await user_client.get_pump_curve_state(bonding_curve_address)
+                                token_price_sol = user_client.calculate_pump_curve_price(curve_state)
+                                estimated_sol = token_amount * token_price_sol
+
+                                if trade.min_amount and estimated_sol < trade.min_amount:
+                                    logger.info(
+                                        f"[MANAGER] Estimated SOL amount {estimated_sol} is below minimum {trade.min_amount} SOL")
+                                    new_transaction.status = "SKIPPED"
+                                    new_transaction.error = f"Amount below minimum"
+                                    await session.commit()
+                                    continue
+
+                                if trade.max_amount and estimated_sol > trade.max_amount:
+                                    # Корректируем количество токенов для продажи
+                                    token_amount = trade.max_amount / token_price_sol
+                                    logger.info(
+                                        f"[MANAGER] Token amount reduced to {token_amount} to match maximum SOL amount")
+
+                                copy_amount = token_amount  # Для SELL это количество токенов
+
+                            except Exception as e:
+                                logger.error(f"[MANAGER] Error calculating token amount: {str(e)}")
+                                new_transaction.status = "FAILED"
+                                new_transaction.error = f"Failed to calculate token amount: {str(e)}"
+                                await session.commit()
+                                continue
+                        else:
+                            # Для BUY транзакций оставляем текущую логику
+                            # Получаем сумму транзакции в SOL (уже в lamports)
+                            amount_sol = tx_info.get("amount_sol", 0)
+                            if amount_sol == 0:
+                                logger.error(f"[MANAGER] Failed to get transaction amount for {signature}")
+                                new_transaction.status = "FAILED"
+                                new_transaction.error = "Failed to get transaction amount"
+                                await session.commit()
+                                continue
+
+                            # Конвертируем в SOL
+                            amount_sol = amount_sol / LAMPORTS_PER_SOL
+                            logger.info(f"[MANAGER] Original transaction amount: {amount_sol} SOL")
+
+                            # Рассчитываем сумму для копирования
+                            copy_amount = amount_sol * (trade.copy_percentage / 100)
+                            logger.info(
+                                f"[MANAGER] Calculated copy amount: {copy_amount} SOL ({trade.copy_percentage}%)")
+
+                        # Проверяем общий лимит
+                        if trade.total_amount:
+                            total_spent = await session.scalar(
+                                select(func.sum(CopyTradeTransaction.amount_sol))
+                                .where(CopyTradeTransaction.copy_trade_id == trade.id)
+                                .where(CopyTradeTransaction.status == "SUCCESS")
+                            ) or 0
+
+                            logger.info(f"[MANAGER] Total amount spent so far: {total_spent} SOL")
+                            if total_spent + copy_amount > trade.total_amount:
+                                logger.info(f"[MANAGER] Total amount limit reached for trade {trade.id}")
+                                new_transaction.status = "SKIPPED"
+                                new_transaction.error = "Total amount limit reached"
+                                await session.commit()
+                                continue
+
+                        # Проверяем лимит копий токена
+                        if trade.max_copies_per_token:
+                            copies_count = await session.scalar(
+                                select(func.count(CopyTradeTransaction.id))
+                                .where(CopyTradeTransaction.copy_trade_id == trade.id)
+                                .where(CopyTradeTransaction.token_address == token_address)
+                                .where(CopyTradeTransaction.status == "SUCCESS")
+                            ) or 0
+
+                            logger.info(f"[MANAGER] Current copies count for token: {copies_count}")
+                            if copies_count >= trade.max_copies_per_token:
+                                logger.info(f"[MANAGER] Max copies limit reached for token {token_address}")
+                                new_transaction.status = "SKIPPED"
+                                new_transaction.error = "Max copies limit reached"
+                                await session.commit()
+                                continue
+
+                        # Получаем пользователя для проверки баланса
+                        user = await session.scalar(
+                            select(User).where(User.id == trade.user_id)
+                        )
+                        if not user or not user.solana_wallet:
+                            logger.error(f"[MANAGER] User {trade.user_id} not found or no wallet")
+                            new_transaction.status = "FAILED"
+                            new_transaction.error = "User wallet not found"
                             await session.commit()
                             continue
 
-                        user_client = SolanaClient(
-                            compute_unit_price=self.solana_client.compute_unit_price,
-                            private_key=private_key
-                        )
+                        # Получаем private key пользователя
+                        private_key = user.private_key
+                        if not private_key:
+                            logger.error(f"[MANAGER] No private key found for user {trade.user_id}")
+                            new_transaction.status = "FAILED"
+                            new_transaction.error = "No private key found"
+                            await session.commit()
+                            continue
 
-                        # Проверяем что ключ успешно загружен
+                        logger.info(f"[MANAGER] Retrieved private key for user {trade.user_id}")
+                        logger.debug(f"[MANAGER] Private key string length: {len(private_key)}")
+
+                        # Создаем новый экземпляр клиента с private key пользователя
                         try:
-                            payer = user_client.load_keypair()
-                            logger.info(
-                                f"[MANAGER] Successfully loaded keypair for user {trade.user_id}. Public key: {payer.pubkey()}")
+                            logger.info(f"[MANAGER] Creating new SolanaClient instance for user {trade.user_id}")
 
-                            # Проверяем что публичный ключ соответствует адресу кошелька
-                            if str(payer.pubkey()) != user.solana_wallet:
-                                logger.error(
-                                    f"[MANAGER] Keypair public key {payer.pubkey()} does not match wallet address {user.solana_wallet}")
+                            # Проверяем формат private key
+                            try:
+                                key_parts = private_key.split(',')
+                                logger.debug(f"[MANAGER] Split private key into {len(key_parts)} parts")
+
+                                # Пробуем сконвертировать в числа
+                                key_bytes = [int(i) for i in key_parts]
+                                logger.debug(f"[MANAGER] Converted to bytes array with length: {len(key_bytes)}")
+
+                                if len(key_bytes) != 64:
+                                    raise ValueError(f"Invalid key length: {len(key_bytes)} (expected 64)")
+
+                            except Exception as e:
+                                logger.error(f"[MANAGER] Invalid private key format: {str(e)}")
                                 new_transaction.status = "FAILED"
-                                new_transaction.error = "Invalid keypair"
+                                new_transaction.error = f"Invalid private key format: {str(e)}"
+                                await session.commit()
+                                continue
+
+                            user_client = SolanaClient(
+                                compute_unit_price=self.solana_client.compute_unit_price,
+                                private_key=private_key
+                            )
+
+                            # Проверяем что ключ успешно загружен
+                            try:
+                                payer = user_client.load_keypair()
+                                logger.info(
+                                    f"[MANAGER] Successfully loaded keypair for user {trade.user_id}. Public key: {payer.pubkey()}")
+
+                                # Проверяем что публичный ключ соответствует адресу кошелька
+                                if str(payer.pubkey()) != user.solana_wallet:
+                                    logger.error(
+                                        f"[MANAGER] Keypair public key {payer.pubkey()} does not match wallet address {user.solana_wallet}")
+                                    new_transaction.status = "FAILED"
+                                    new_transaction.error = "Invalid keypair"
+                                    await session.commit()
+                                    continue
+
+                            except Exception as e:
+                                logger.error(f"[MANAGER] Failed to load keypair: {str(e)}")
+                                logger.error(f"[MANAGER] Error type: {type(e).__name__}")
+                                new_transaction.status = "FAILED"
+                                new_transaction.error = f"Failed to load keypair: {str(e)}"
                                 await session.commit()
                                 continue
 
                         except Exception as e:
-                            logger.error(f"[MANAGER] Failed to load keypair: {str(e)}")
+                            logger.error(f"[MANAGER] Failed to create SolanaClient for user {trade.user_id}: {str(e)}")
                             logger.error(f"[MANAGER] Error type: {type(e).__name__}")
                             new_transaction.status = "FAILED"
-                            new_transaction.error = f"Failed to load keypair: {str(e)}"
+                            new_transaction.error = f"Failed to create client: {str(e)}"
                             await session.commit()
                             continue
 
+                        # Проверяем баланс используя клиент пользователя
+                        try:
+                            balance = await user_client.get_sol_balance(user.solana_wallet)
+                            logger.info(f"[MANAGER] User balance: {balance} SOL")
+                            if balance < copy_amount:
+                                logger.error(f"[MANAGER] Insufficient balance for user {trade.user_id}")
+                                new_transaction.status = "FAILED"
+                                new_transaction.error = "Insufficient balance"
+                                await session.commit()
+                                continue
+                        except Exception as e:
+                            logger.error(f"[MANAGER] Failed to get balance for user {trade.user_id}: {str(e)}")
+                            new_transaction.status = "FAILED"
+                            new_transaction.error = f"Failed to get balance: {str(e)}"
+                            await session.commit()
+                            continue
+
+                        # Получаем адреса кривых
+
+                        mint = token_address  # token_address уже является Pubkey
+                        logger.info(f"[MANAGER] Using mint address: {mint}")
+                        bonding_curve_address, _ = get_bonding_curve_address(mint, user_client.PUMP_PROGRAM)
+                        associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
+
+                        # Выполняем транзакцию
+                        logger.info(f"[MANAGER] Executing {tx_type} transaction for user {trade.user_id}")
+                        try:
+                            if tx_type == "BUY":
+                                result = await user_client.buy_token(
+                                    mint=mint,
+                                    bonding_curve=bonding_curve_address,
+                                    associated_bonding_curve=associated_bonding_curve,
+                                    amount=copy_amount,
+                                    slippage=trade.buy_slippage / 100  # Convert percentage to decimal
+                                )
+                            else:  # SELL
+                                result = await user_client.sell_token(
+                                    mint=mint,
+                                    bonding_curve=bonding_curve_address,
+                                    associated_bonding_curve=associated_bonding_curve,
+                                    token_amount=copy_amount,  # Здесь copy_amount это количество токенов
+                                    min_amount=trade.sell_slippage / 100  # Convert percentage to decimal
+                                )
+
+                            # Если результат это Signature - значит транзакция успешна
+                            if isinstance(result, Signature):
+                                copied_signature = str(result)
+                                new_transaction.status = "SUCCESS"
+                                new_transaction.copied_signature = copied_signature
+                                new_transaction.amount_sol = copy_amount
+                                logger.info(
+                                    f"[MANAGER] Successfully copied transaction {signature} for user {trade.user_id}")
+                                logger.info(f"[MANAGER] Copy transaction signature: {copied_signature}")
+
+                                # Send success notification
+                                success_message = (
+                                    f"✅ Успешно скопирована транзакция {tx_type}\n\n"
+                                    f"🏦 Кошелек лидера: <code>{leader}</code>\n"
+                                    f"💎 Токен: <code>{token_address}</code>\n"
+                                    f"💰 Сумма: {copy_amount:.4f} SOL\n"
+                                    f"🔗 Транзакция: <a href='https://solscan.io/tx/{copied_signature}'>Solscan</a>"
+                                )
+                                await self.send_notification(user.telegram_id, success_message)
+                                await session.commit()
+
+                            else:
+                                # Если результат это словарь с ошибкой
+                                error_message = result.get("error", "Transaction execution failed")
+                                logger.error(f"[MANAGER] Transaction failed for user {trade.user_id}: {error_message}")
+                                new_transaction.status = "FAILED"
+                                new_transaction.error = error_message
+                                await session.commit()
+
+                                # Send failure notification
+                                failure_message = (
+                                    f"❌ Ошибка при копировании транзакции {tx_type}\n\n"
+                                    f"🏦 Кошелек лидера: <code>{leader}</code>\n"
+                                    f"💎 Токен: <code>{token_address}</code>\n"
+                                    f"💰 Сумма: {copy_amount:.4f} SOL\n"
+                                    f"❗️ Причина: {error_message}"
+                                )
+                                await self.send_notification(user.telegram_id, failure_message)
+
+                        except Exception as e:
+                            logger.error(f"[MANAGER] Error executing transaction: {str(e)}")
+                            logger.error(f"[MANAGER] Error type: {type(e).__name__}")
+                            import traceback
+                            logger.error(f"[MANAGER] Traceback: {traceback.format_exc()}")
+                            new_transaction.status = "FAILED"
+                            new_transaction.error = str(e)
+                            await session.commit()
+
+                            # Send error notification
+                            error_message = (
+                                f"❌ Ошибка при копировании транзакции {tx_type}\n\n"
+                                f"🏦 Кошелек лидера: <code>{leader}</code>\n"
+                                f"💎 Токен: <code>{token_address}</code>\n"
+                                f"💰 Сумма: {copy_amount:.4f} SOL\n"
+                                f"❗️ Причина: {str(e)}"
+                            )
+                            await self.send_notification(user.telegram_id, error_message)
+
                     except Exception as e:
-                        logger.error(f"[MANAGER] Failed to create SolanaClient for user {trade.user_id}: {str(e)}")
+                        logger.error(f"[MANAGER] Error executing transaction: {str(e)}")
                         logger.error(f"[MANAGER] Error type: {type(e).__name__}")
+                        import traceback
+                        logger.error(f"[MANAGER] Traceback: {traceback.format_exc()}")
                         new_transaction.status = "FAILED"
-                        new_transaction.error = f"Failed to create client: {str(e)}"
+                        new_transaction.error = str(e)
                         await session.commit()
-                        continue
 
-                    # Получаем информацию о транзакции
-                    tx_info = await user_client.get_transaction(signature)
-                    if not tx_info:
-                        raise Exception("Failed to get transaction info")
-
-                    # Получаем сумму транзакции в SOL (уже в lamports)
-                    amount_sol = tx_info.get("amount_sol", 0)
-                    if amount_sol == 0:
-                        logger.error(f"[MANAGER] Failed to get transaction amount for {signature}")
-                        new_transaction.status = "FAILED"
-                        new_transaction.error = "Failed to get transaction amount"
-                        await session.commit()
-                        continue
-
-                    # Конвертируем в SOL
-                    amount_sol = amount_sol / LAMPORTS_PER_SOL
-                    logger.info(f"[MANAGER] Original transaction amount: {amount_sol} SOL")
-
-                    # Рассчитываем сумму для копирования
-                    copy_amount = amount_sol * (trade.copy_percentage / 100)
-                    logger.info(f"[MANAGER] Calculated copy amount: {copy_amount} SOL ({trade.copy_percentage}%)")
-                    
-                    # Отправляем уведомление о начале копирования
-                    start_message = (
-                        f"🔄 Начинаю копировать транзакцию {tx_type}\n\n"
-                        f"🏦 Кошелек лидера: <code>{leader}</code>\n"
-                        f"💎 Токен: <code>{token_address}</code>\n"
-                        f"💰 Сумма: {copy_amount:.4f} SOL"
-                    )
-                    await self.send_notification(user.telegram_id, start_message)
-
-                    # Создаем запись о транзакции
-                    new_transaction.status = "SUCCESS"
-                    new_transaction.copied_signature = signature
-                    new_transaction.amount_sol = copy_amount
-                    logger.info(
-                        f"[MANAGER] Successfully copied transaction {signature} for user {trade.user_id}")
-                    logger.info(f"[MANAGER] Copy transaction signature: {signature}")
-
-                    # Вычисляем время выполнения
-                    execution_time = time.time() - transaction_start_time
-                    
-                    success_message = (
-                        f"✅ Успешно скопирована транзакция {tx_type}\n\n"
-                        f"🏦 Кошелек лидера: <code>{leader}</code>\n\n"
-                        f"💎 Токен: <code>{token_address}</code>\n"
-                        f"💰 Сумма: {_format_price(copy_amount)} SOL\n"
-                        f"💵 Цена токена: {_format_price(amount_sol)} SOL\n"
-                        f"🔢 Количество токенов: {_format_price(amount_sol)}\n"
-                        f"⏱ Время выполнения: {execution_time:.2f} сек\n"
-                        f"🔗 Транзакция: <a href='https://solscan.io/tx/{signature}'>Solscan</a>"
-                    )
-                    await self.send_notification(user.telegram_id, success_message)
-                    await session.commit()
+                        # Send error notification
+                        error_message = (
+                            f"❌ Ошибка при копировании транзакции {tx_type}\n\n"
+                            f"🏦 Кошелек лидера: <code>{leader}</code>\n"
+                            f"💎 Токен: <code>{token_address}</code>\n"
+                            f"💰 Сумма: {copy_amount:.4f} SOL\n"
+                            f"❗️ Причина: {str(e)}"
+                        )
+                        await self.send_notification(user.telegram_id, error_message)
 
                 except Exception as e:
                     logger.error(f"[MANAGER] Error processing copy trade {trade.id}: {str(e)}")
@@ -331,7 +504,7 @@ class CopyTradeManager:
             self.active_trades[wallet].discard(copy_trade)
             if not self.active_trades[wallet]:
                 del self.active_trades[wallet]
-                # TODO: Remove leader from monitor 
+                # TODO: Remove leader from monitor
 
     async def handle_transaction_with_session(self, leader: str, tx_type: str, signature: str,
                                               token_address: Optional[str]):
