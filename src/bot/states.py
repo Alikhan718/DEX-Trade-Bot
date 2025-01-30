@@ -64,3 +64,8 @@ class BuySettingStates(StatesGroup):
 class SellSettingStates(StatesGroup):
     waiting_for_gas_fee = State()
     waiting_for_slippage = State()
+
+
+class WithdrawStates(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_address = State()

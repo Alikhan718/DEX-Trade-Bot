@@ -45,6 +45,10 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🛡️ Проверка на скам", callback_data="rugcheck"),
         InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu")
     ],
+    # Withdraw
+    [
+        InlineKeyboardButton(text="💸 Вывод средств", callback_data="withdraw")
+    ],
     # Settings and help
     [
         InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings_menu"),
