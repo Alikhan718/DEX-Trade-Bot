@@ -26,6 +26,11 @@ class SolanaService:
         self.last_price_update = None
         self.price_update_interval = 300  # 5 minutes in seconds
 
+    def create_client(self, private_key: str) -> 'SolanaClient':
+        """Create a new SolanaClient instance with the given private key"""
+        from src.solana_module.solana_client import SolanaClient
+        return SolanaClient(compute_unit_price=1000, private_key=private_key)
+
     async def get_sol_price(self) -> float:
         """Get current SOL price with caching"""
         current_time = datetime.now()

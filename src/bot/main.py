@@ -13,7 +13,7 @@ from src.services.solana_service import SolanaService
 from src.services.smart_money import SmartMoneyTracker
 from src.services.rugcheck import RugCheckService
 from .middleware import DatabaseMiddleware, ServicesMiddleware
-from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell, settings, referral_system
+from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trade, sell, settings, referral_system, withdraw
 from .services.copy_trade_service import CopyTradeService
 from src.solana_module.limit_orders import AsyncLimitOrders
 
@@ -94,6 +94,7 @@ class SolanaDEXBot:
         self.dp.include_router(buy.router)
         self.dp.include_router(settings.router)
         self.dp.include_router(referral_system.router)
+        self.dp.include_router(withdraw.router)
 
         logger.info("Handlers registered successfully")
 

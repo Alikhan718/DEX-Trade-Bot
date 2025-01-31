@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import re
 from typing import Union
+from aiogram.filters import StateFilter
 
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
@@ -926,7 +927,7 @@ async def show_limit_buy_menu(
     edit: bool = False
 ):
     """
-    Отображает меню лимитной покупки (порог цены, сумма SOL, slippage, подтверждение).
+    Отображает меню лимитного ордера (порог цены, сумма SOL, slippage, подтверждение).
     Параметр edit=True означает, что мы редактируем существующее сообщение,
     иначе отправляем новое.
     """
@@ -1397,7 +1398,8 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
         await state.clear()
 
 
-@router.message(F.text.len() == 44)
+
+@router.message(F.text.len() == 44 and StateFilter(None), flags={"priority": 1})
 async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession,
                           solana_service: SolanaService):
     """Автоматическая покупка при получении mint адреса"""
