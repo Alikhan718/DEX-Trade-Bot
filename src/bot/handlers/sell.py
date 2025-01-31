@@ -8,7 +8,7 @@ from solders.pubkey import Pubkey
 
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
-from src.database.models import User
+from src.database.models import User, Trade
 from .buy import _format_price
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
@@ -52,17 +52,97 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
             await callback_query.answer("❌ Пользователь не найден")
             return
 
-        await callback_query.message.answer(
-            "🔍 Введите адрес токена, который хотите продать:\n"
-            "Например: `HtLFhnhxcm6HWr1Bcwz27BJdks9vecbSicVLGPPmpump`",
-            # f"{token_links_text}\n\n",
-            parse_mode="MARKDOWN",
-            reply_markup=ForceReply(selective=True)
+        # Create SolanaClient instance
+        solana_client = SolanaClient(compute_unit_price=100000)  # Default compute unit price
+
+        # Get user's tokens
+        tx_handler = UserTransactionHandler(user.private_key, 10000000)
+        tokens = await solana_client.get_tokens(user.solana_wallet, tx_handler)
+
+        if not tokens:
+            await callback_query.message.edit_text(
+                "❌ У вас нет токенов для продажи",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+                ])
+            )
+            return
+
+        # Create keyboard with tokens
+        keyboard = []
+        for token_address, market_cap, name, symbol, balance in tokens:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"💎 {symbol} ({name} - ${_format_price(balance)})",
+                    callback_data=f"select_token_{token_address}"
+                )
+            ])
+
+        # Add back button
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
+
+        await callback_query.message.edit_text(
+            "🔴 Выберите токен для продажи:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
+
+        await state.set_state(SellStates.waiting_for_token)
+
     except Exception as e:
-        print(traceback.format_exc())
+        traceback.format_exc()
         logger.error(f"Error in sell button handler: {e}")
-        await callback_query.answer("❌ Произошла ошибка")
+        traceback.print_exc()
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при получении списка токенов",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ])
+        )
+
+# Добавляем новый обработчик для выбора токена из списка
+@router.callback_query(lambda c: c.data.startswith("select_token_"), flags={"priority": 3})
+async def handle_token_selection(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    try:
+        token_address = callback_query.data.replace("select_token_", "")
+
+        # Store token address in state
+        user_id = get_real_user_id(callback_query)
+        stmt = await session.execute(select(User).where(User.telegram_id == user_id))
+        user = stmt.unique().scalar_one_or_none()
+        tx_handler = UserTransactionHandler(user.private_key, 10000000)
+        token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
+
+        mint = Pubkey.from_string(token_address)
+        bonding_curve, _ = get_bonding_curve_address(mint, tx_handler.client.PUMP_PROGRAM)
+        associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve)
+
+        # Save token data to state
+        sell_setting = await get_user_setting(user_id, 'sell', session)
+        slippage = sell_setting['slippage']
+        gas_fee = sell_setting['gas_fee']
+        await state.update_data({
+            'token_address': token_address,
+            'bonding_curve': str(bonding_curve),
+            'associated_bonding_curve': str(associated_bonding_curve),
+            'token_balance': token_balance,
+            'operation_context': 'sell',  # Set operation context to sell
+            'sell_percentage': 100,  # Default to 100%
+            'slippage': slippage,  # Default slippage
+            'gas_fee': gas_fee
+        })
+
+        # Show sell menu for selected token
+        await show_sell_menu(callback_query.message, state, session)
+
+    except Exception as e:
+        logger.error(f"Error handling token selection: {e}")
+        traceback.print_exc()
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при выборе токена",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="sell")]
+            ])
+        )
 
 
 @router.message(F.text.startswith("token_"), flags={"priority": 2})
@@ -99,12 +179,10 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
 
         try:
             sell_settings = await get_user_setting(user_id, 'sell', session)
-            print(sell_settings)
             tx_handler = UserTransactionHandler(user.private_key, sell_settings['gas_fee'])
             token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
-            token_balance_decimal = float(token_balance) if token_balance else 0.0
 
-            if token_balance_decimal <= 0:
+            if token_balance <= 0:
                 await message.reply(
                     "❌ У вас нет этого токена",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -136,7 +214,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             'token_address': token_address,
             'bonding_curve': str(bonding_curve),
             'associated_bonding_curve': str(associated_bonding_curve),
-            'token_balance': token_balance_decimal,
+            'token_balance': token_balance,
             'operation_context': 'sell',  # Set operation context to sell
             'sell_percentage': 100,  # Default to 100%
             'slippage': slippage,  # Default slippage
@@ -161,7 +239,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
-            f"💰 Баланс: {_format_price(token_balance_decimal)} токенов\n"
+            f"💰 Баланс: {_format_price(token_balance)} токенов (${_format_price(token_balance * token_info.price_usd)})\n"
             f"⚙️ Slippage: {slippage}%\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
@@ -234,7 +312,6 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         )
 
         # Get current token price
-        mint = Pubkey.from_string(token_address)
         token_info = await token_info_service.get_token_info(token_address)
         sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
         # Get token price before transaction
@@ -281,8 +358,8 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             sell_type = "Initial" if sell_percentage == "initial" else f"{sell_percentage}%"
             await status_message.edit_text(
                 "✅ Токен успешно продан!\n\n"
-                f"💰 Продано: {amount_tokens:.6f} токенов ({sell_type})\n"
-                f"💵 Цена: {_format_price(current_price_sol)} SOL\n"
+                f"💰 Продано: {_format_price(amount_tokens)} токенов ({sell_type})\n"
+                f"💵 Цена: {(current_price_sol)} SOL\n"
                 f"💰 Получено: {_format_price(amount_tokens * current_price_sol)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
@@ -291,6 +368,20 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
                 ])
             )
+            trade = Trade(
+                user_id=user.id,
+                token_address=token_address,
+                amount=amount_tokens,
+                price_usd=current_price_sol,
+                amount_sol=amount_tokens * current_price_sol,
+                created_at=datetime.now(),
+                transaction_type=1,
+                status="SUCCESS",
+                gas_fee=sell_settings['gas_fee'],
+                transaction_hash=tx_signature,
+            )
+            session.add(trade)
+            await session.commit()
         else:
             logger.error("Sell transaction failed: No signature returned")
             # Update error message
@@ -410,7 +501,6 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
     try:
         # Extract percentage from callback data
         sell_type = callback_query.data.split("_", 1)[1]
-        print(sell_type)
 
         if sell_type == "initial":
             # Save special type to state
@@ -513,7 +603,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
-            f"💰 Баланс: {_format_price(token_balance)} токенов\n"
+            f"💰 Баланс: {_format_price(token_balance)} токенов (${_format_price(token_balance * token_info.price_usd)})\n"
             f"⚙️ Slippage: {slippage}%\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
@@ -532,6 +622,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
 
     except Exception as e:
         logger.error(f"Error showing sell menu: {e}")
+        traceback.print_exc()
         await message.edit_text(
             "❌ Произошла ошибка при отображении меню",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
