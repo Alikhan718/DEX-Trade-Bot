@@ -131,7 +131,7 @@ async def handle_withdraw_amount(message: Message, state: FSMContext, session: A
             logger.info("[WITHDRAW] Invalid amount format")
             await message.answer(
                 "❌ Пожалуйста, введите корректное число",
-                reply_markup=withdraw_menu_keyboard
+                reply_markup=ForceReply(selective=True)
             )
             return
 

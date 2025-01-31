@@ -387,10 +387,10 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         )
 
         # Get token price before transaction
-        mint = Pubkey.from_string(token_address)
-        bonding_curve, _ = get_bonding_curve_address(mint, tx_handler.client.PUMP_PROGRAM)
-        curve_state = await tx_handler.client.get_pump_curve_state(bonding_curve)
-        token_price_sol = tx_handler.client.calculate_pump_curve_price(curve_state)
+        token_info = await token_info_service.get_token_info(token_address)
+        sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
+        # Get token price before transaction
+        token_price_sol = token_info.price_usd / sol_price_usd.price_usd
 
         # Execute buy transaction
         logger.info("Executing buy transaction")
