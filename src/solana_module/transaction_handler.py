@@ -61,7 +61,7 @@ class UserTransactionHandler:
             Transaction signature if successful, None otherwise
         """
         try:
-            radium = RaydiumAmmV4()
+            radium = RaydiumAmmV4(self.client.payer)
             radium.payer_keypair = self.client.payer
             logger.info(f"Starting buy_token for address: {token_address}")
 

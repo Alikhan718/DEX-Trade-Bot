@@ -5,7 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from solders.pubkey import Pubkey
-
+from datetime import datetime
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
 from src.database.models import User, Trade
