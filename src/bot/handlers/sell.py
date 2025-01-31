@@ -348,6 +348,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         tx_signature = await tx_handler.sell_token(
             token_address=token_address,
             amount_tokens=amount_tokens,
+            sell_percentage=sell_percentage,
             slippage=slippage
         )
 
