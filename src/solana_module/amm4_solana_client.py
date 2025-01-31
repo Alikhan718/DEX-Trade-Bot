@@ -119,10 +119,8 @@ class RaydiumAmmV4:
     # Replace them with your real Solana client & payer keypair in practice.
     # -------------------------------------------------------------------------
     client = SomeSolanaClient("https://api.mainnet-beta.solana.com")
-    key_parts = [int(i) for i in os.getenv('SECRET_KEY').split(',')]
-    key_bytes = [int(i) for i in key_parts]
-    key_bytes_obj = bytes(key_bytes)
-    payer_keypair = Keypair.from_bytes(key_bytes_obj)
+
+    payer_keypair = None
     UNIT_BUDGET = 1_400_000  # Example compute budget
     UNIT_PRICE = 200_000          # Example unit price
 
