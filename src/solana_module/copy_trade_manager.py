@@ -3,15 +3,17 @@ import traceback
 
 import logging
 from typing import Dict, Set, Optional
+
+import requests
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from solders.signature import Signature
-import json
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
+from src.bot.handlers.buy import _format_price
 from .solana_monitor import SolanaMonitor
-from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User
+from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User, Trade
 from .solana_client import SolanaClient, LAMPORTS_PER_SOL
 from .utils import get_bonding_curve_address, find_associated_bonding_curve
 from solders.pubkey import Pubkey
@@ -161,9 +163,16 @@ class CopyTradeManager:
                     await session.commit()
                     await session.refresh(new_transaction)
                     logger.info(f"[MANAGER] Created new transaction record {new_transaction.id}")
-
+                    leader_token_info = None
+                    leader_price_usd = None
                     try:
                         # Получаем информацию о транзакции лидера
+                        leader_token_info = await self.solana_client.token_info(token_address)
+                        if leader_token_info:
+                            platform_id = leader_token_info['platformId']
+                            pool_id = leader_token_info['poolId']
+                            req = requests.get(f"https://api.coinmarketcap.com/kline/v3/k-line/candles/{str(platform_id)}/{str(pool_id)}?type=1m&countBack=1")
+                            leader_price_usd = req.json()['data'][-1]['close']
                         tx_info = await self.solana_client.get_transaction(signature_obj)
                         if not tx_info:
                             logger.error(f"[MANAGER] Failed to get transaction info for {signature}")
@@ -399,6 +408,7 @@ class CopyTradeManager:
 
                             # Если результат это Signature - значит транзакция успешна
                             if isinstance(result, Signature):
+                                execution_time = time.time() - transaction_start_time
                                 copied_signature = str(result)
                                 new_transaction.status = "SUCCESS"
                                 new_transaction.copied_signature = copied_signature
@@ -406,13 +416,19 @@ class CopyTradeManager:
                                 logger.info(
                                     f"[MANAGER] Successfully copied transaction {signature} for user {trade.user_id}")
                                 logger.info(f"[MANAGER] Copy transaction signature: {copied_signature}")
-
+                                token_info = await user_client.token_info(token_address)
+                                price_usd = token_info['priceUsd']
                                 # Send success notification
+
                                 success_message = (
                                     f"✅ Успешно скопирована транзакция {tx_type}\n\n"
-                                    f"🏦 Кошелек лидера: <code>{leader}</code>\n"
+                                    f"🏦 Кошелек лидера: <code>{leader}</code>\n\n"
+                                    f"💵 Цена токена лидера (На момент покупки): {_format_price(leader_price_usd)} SOL\n"
+                                    f"💵 Цена вашего токена (На момент покупки): {_format_price(price_usd)} SOL\n"
                                     f"💎 Токен: <code>{token_address}</code>\n"
-                                    f"💰 Сумма: {copy_amount:.4f} SOL\n"
+                                    f"💰 Сумма: {_format_price(amount_sol)} SOL\n"
+                                    f"🔢 Количество токенов: {_format_price(copy_amount)}\n"
+                                    f"⏱ Время выполнения: {execution_time:.2f} сек\n"
                                     f"🔗 Транзакция: <a href='https://solscan.io/tx/{copied_signature}'>Solscan</a>"
                                 )
                                 await self.send_notification(user.telegram_id, success_message)

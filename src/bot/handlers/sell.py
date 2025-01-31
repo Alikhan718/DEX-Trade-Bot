@@ -358,8 +358,8 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             sell_type = "Initial" if sell_percentage == "initial" else f"{sell_percentage}%"
             await status_message.edit_text(
                 "✅ Токен успешно продан!\n\n"
-                f"💰 Продано: {amount_tokens:.6f} токенов ({sell_type})\n"
-                f"💵 Цена: {_format_price(current_price_sol)} SOL\n"
+                f"💰 Продано: {_format_price(amount_tokens)} токенов ({sell_type})\n"
+                f"💵 Цена: {(current_price_sol)} SOL\n"
                 f"💰 Получено: {_format_price(amount_tokens * current_price_sol)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
@@ -375,7 +375,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                 price_usd=current_price_sol,
                 amount_sol=amount_tokens * current_price_sol,
                 created_at=datetime.now(),
-                transaction_type=TransactionType.SELL,
+                transaction_type=1,
                 status="SUCCESS",
                 gas_fee=sell_settings['gas_fee'],
                 transaction_hash=tx_signature,

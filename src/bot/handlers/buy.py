@@ -1,6 +1,5 @@
 import traceback
 from datetime import datetime
-from pprint import pprint
 
 import logging
 from decimal import Decimal
@@ -43,6 +42,59 @@ def _is_valid_token_address(address: str) -> bool:
 
 
 def _format_price(amount, format_length=2) -> str:
+    def decimal_to_plain_string(exp_str: str) -> str:
+        """
+        Принимает число в виде строки (в том числе экспоненциальном формате: '3.0145939853849426E-8')
+        и возвращает его в обычном десятичном виде без экспоненты, сохраняя все цифры.
+        """
+        d = Decimal(exp_str)  # создаём Decimal из строки
+
+        # Парсим структуру внутри Decimal:
+        # sign = 0 или 1, digits = кортеж цифр, exponent = целое (куда сдвинута запятая)
+        sign, digits, exponent = d.as_tuple()
+
+        # Превращаем кортеж цифр в строку.
+        # Например, digits = (3, 0, 1, 4, ...) => "3014..."
+        digits_str = "".join(str(dig) for dig in digits)
+
+        # Если все цифры — это просто "0", значит число равно 0:
+        if all(dig == 0 for dig in digits):
+            # Учитывая знак, это будет либо '0', либо '-0'
+            # Но обычно '-0' мы не любим. Если хочешь его сохранить, убери [:-1].
+            return "-0" if sign else "0"
+
+        # Позиция десятичной точки относительно начала digits_str
+        # Пример: если у нас exponent = -8 и digits_str = "30145939853849426",
+        # то int_position = len(digits_str) + exponent = 17 + (-8) = 9
+        int_position = len(digits_str) + exponent
+
+        # Формируем знак
+        result_sign = "-" if sign else ""
+
+        if int_position <= 0:
+            # Все цифры "ушли" вправо от десятичной точки,
+            # значит число меньше 1 и начинается с "0."
+            # Пример: int_position = -2, digits_str = "30145" => 0.0030145...
+            # Нужно добавить |int_position| нулей после десятичной точки
+            zeros_needed = abs(int_position)
+            result = result_sign + "0." + ("0" * (zeros_needed)) + digits_str
+        elif int_position >= len(digits_str):
+            # Все цифры — это целая часть, дробной нет, или её нужно дополнить нулями
+            # Пример: int_position = 6, digits_str = "12345" => надо одну цифру "0" в конец
+            zeros_needed = int_position - len(digits_str)
+            result = result_sign + digits_str + ("0" * zeros_needed)
+        else:
+            # Часть цифр — целая, часть — дробная
+            # Разделяем строку digits_str на две части
+            # Пример: digits_str = "30145939853849426", int_position = 1 => "3.0145939853849426"
+            result = (
+                result_sign
+                + digits_str[:int_position]
+                + "."
+                + digits_str[int_position:]
+            )
+
+        return result
     """Форматирует цену в читаемый вид с маленькими цифрами после точки"""
     amount = Decimal(str(amount))
     # Юникод для маленьких цифр
@@ -53,6 +105,7 @@ def _format_price(amount, format_length=2) -> str:
 
     def to_small_and_normal_digits(number: Decimal, digits=2) -> str:
         """Преобразует число в строку, заменяя нули на маленькие цифры, а остальные на обычные"""
+        number = decimal_to_plain_string(str(number))
         parts = str(number).split('.')
         int_part = parts[0]
         frac_part = parts[1] if len(parts) > 1 else ''
@@ -271,7 +324,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             logger.error("Missing token address or amount")
             await callback_query.answer("❌ Не указан токен или сумма")
             return
-
+        token_info = await token_info_service.get_token_info(token_address)
         if is_limit_order:
             if not trigger_price_percent:
                 logger.error("Missing trigger price for limit order")
@@ -279,7 +332,6 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
                 return
 
             # Get current token price
-            token_info = await token_info_service.get_token_info(token_address)
             if not token_info:
                 logger.error("Failed to get token info")
                 await callback_query.answer("❌ Не удалось получить информацию о токене")
@@ -353,24 +405,12 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             # Calculate token amount from SOL amount and price
             token_amount = amount_sol / token_price_sol
 
-            trade = Trade(
-                user_id=user.id,
-                token_address=token_address,
-                amount=token_amount,
-                price_usd=token_price_sol,
-                amount_sol=amount_sol,
-                created_at=datetime.now(),
-                transaction_type=0,
-                status="SUCCESS",
-                gas_fee=buy_settings['gas_fee'],
-                transaction_hash=tx_signature,
-            )
             # Update success message
             await status_message.edit_text(
                 "✅ Токен успешно куплен!\n\n"
                 f"💰 Потрачено: {_format_price(amount_sol)} SOL\n"
                 f"📈 Получено: {_format_price(token_amount)} токенов\n"
-                f"💵 Цена: {_format_price(token_price_sol)} SOL\n"
+                f"💵 Цена: {_format_price(token_price_sol)} SOL {'($' + _format_price(token_info.price_usd) + ')' if token_info and token_info.price_usd else ''}\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
                 disable_web_page_preview=True,
@@ -382,7 +422,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
                 user_id=user.id,
                 token_address=token_address,
                 amount=token_amount,
-                price_usd=token_price_sol,
+                price_usd=token_info.price_usd if token_info and token_info.price_usd else -1.0,
                 amount_sol=amount_sol,
                 created_at=datetime.now(),
                 transaction_type=0,
@@ -1396,7 +1436,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             await message.reply(
                 f"❌ Недостаточно средств для автопокупки\n"
                 f"Необходимо: {auto_buy_settings['amount_sol']} SOL\n"
-                f"Доступно: {balance:.4f} SOL",
+                f"Доступно: {_format_price(balance)} SOL",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
                 ])
@@ -1446,9 +1486,9 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             await status_message.edit_text(
                 "✅ Токен успешно куплен!\n\n"
                 f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'}\n"
-                f"💰 Потрачено: {amount_sol} SOL\n"
+                f"💰 Потрачено: {_format_price(amount_sol)} SOL {'($' + _format_price(float(token_info.price_usd) * float(amount_sol)) + ')' if token_info and token_info.price_usd else ''}\n"
                 f"⚙️ Slippage: {slippage}%\n"
-                f"💳 Баланс: {(balance - amount_sol):.4f} SOL\n"
+                f"💳 Баланс: {_format_price(balance - amount_sol)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
                 disable_web_page_preview=True,
