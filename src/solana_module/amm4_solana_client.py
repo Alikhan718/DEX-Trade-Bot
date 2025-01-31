@@ -819,19 +819,6 @@ class RaydiumAmmV4:
                 print("No valid pool address returned.")
                 return False
 
-            # 1) Check the pool’s status via Raydium API
-            pool_info_data = self.get_pool_info_by_id(pair_address)
-            if ("data" not in pool_info_data) or (not pool_info_data["data"]):
-                print("Pool info not found from Raydium API; cannot confirm official pool.")
-                return False
-            
-            pool_info_item = pool_info_data["data"][0]
-            if (not pool_info_item.get("official", False)) or (pool_info_item.get("status") != 1):
-                print("Pool is not recognized as an 'official' active Raydium pool.")
-                return False
-            
-            print("Pool is recognized as an official and active Raydium pool.")
-
             # 2) Proceed with the usual Raydium sell flow
             print("Pool found!")
             pool_keys = RaydiumAmmV4.fetch_amm_v4_pool_keys(pair_address)
