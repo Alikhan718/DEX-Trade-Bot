@@ -30,7 +30,7 @@ from spl.token.instructions import (
     close_account,
 )
 
-from raydium.constants import (
+from src.solana_module.raydium.constants import (
     WSOL,
     TOKEN_PROGRAM_ID,
     RAYDIUM_AMM_V4,
@@ -129,7 +129,7 @@ class RaydiumAmmV4:
     # -------------------------------------------------------------------------
     # Layouts for AMM V4 decoding
     # -------------------------------------------------------------------------
-    from layouts.amm_v4 import LIQUIDITY_STATE_LAYOUT_V4, MARKET_STATE_LAYOUT_V3
+    from src.solana_module.layouts.amm_v4 import LIQUIDITY_STATE_LAYOUT_V4, MARKET_STATE_LAYOUT_V3
 
     @dataclass
     class AmmV4PoolKeys:
@@ -622,7 +622,7 @@ class RaydiumAmmV4:
 
             confirmed = RaydiumAmmV4.confirm_txn(txn_sig)
             print("Transaction confirmed:", confirmed)
-            return confirmed
+            return txn_sig
 
         except Exception as e:
             print("Error occurred during 'buy' transaction:", e)
@@ -776,54 +776,84 @@ class RaydiumAmmV4:
 
             confirmed = RaydiumAmmV4.confirm_txn(txn_sig)
             print("Transaction confirmed:", confirmed)
-            return confirmed
+            return txn_sig
 
         except Exception as e:
             print("Error occurred during 'sell' transaction:", e)
             return False
         
     def buy_exec(self, mint: str, sol_in: float, slippage: int = 5) -> bool:
-        pair_address = get_pool(mint)
-        if pair_address:
+        try:
+            pair_address = get_pool(mint)
+            if not pair_address:
+                print("No valid pool address returned.")
+                return False
+
+            # 2) Proceed with the usual Raydium buy flow
             print("Pool found!")
             pool_keys = RaydiumAmmV4.fetch_amm_v4_pool_keys(pair_address)
             if not pool_keys:
                 print(f"Failed to fetch AMM v4 pool keys for {pair_address}.")
-            else:
-                print("Pool Keys fetched successfully!")
-                print("AMM ID:", pool_keys.amm_id)
-                print("Base Mint:", pool_keys.base_mint)
-                print("Quote Mint:", pool_keys.quote_mint)
-            
+                return False
+            print("Pool Keys fetched successfully!")
+            print("AMM ID:", pool_keys.amm_id)
+            print("Base Mint:", pool_keys.base_mint)
+            print("Quote Mint:", pool_keys.quote_mint)
+
             res = RaydiumAmmV4.buy(pair_address=pair_address, sol_in=sol_in, slippage=slippage)
             if res:
                 print("Транзакция на покупку прошла успешно")
-                return True
+                return res
             else:
                 print("Транзакция на покупку не удалась")
                 return False
-                    
+
+        except Exception as e:
+            print("Error occurred during 'buy' transaction:", e)
+            return False
+
     def sell_exec(self, mint: str, percentage: int, slippage: int = 5) -> bool:
-        pair_address = get_pool(mint)
-        if pair_address:
+        try:
+            pair_address = get_pool(mint)
+            if not pair_address:
+                print("No valid pool address returned.")
+                return False
+
+            # 1) Check the pool’s status via Raydium API
+            pool_info_data = self.get_pool_info_by_id(pair_address)
+            if ("data" not in pool_info_data) or (not pool_info_data["data"]):
+                print("Pool info not found from Raydium API; cannot confirm official pool.")
+                return False
+            
+            pool_info_item = pool_info_data["data"][0]
+            if (not pool_info_item.get("official", False)) or (pool_info_item.get("status") != 1):
+                print("Pool is not recognized as an 'official' active Raydium pool.")
+                return False
+            
+            print("Pool is recognized as an official and active Raydium pool.")
+
+            # 2) Proceed with the usual Raydium sell flow
             print("Pool found!")
             pool_keys = RaydiumAmmV4.fetch_amm_v4_pool_keys(pair_address)
             if not pool_keys:
                 print(f"Failed to fetch AMM v4 pool keys for {pair_address}.")
-            else:
-                print("Pool Keys fetched successfully!")
-                print("AMM ID:", pool_keys.amm_id)
-                print("Base Mint:", pool_keys.base_mint)
-                print("Quote Mint:", pool_keys.quote_mint)
-            
+                return False
+            print("Pool Keys fetched successfully!")
+            print("AMM ID:", pool_keys.amm_id)
+            print("Base Mint:", pool_keys.base_mint)
+            print("Quote Mint:", pool_keys.quote_mint)
+
             res = RaydiumAmmV4.sell(pair_address=pair_address, percentage=percentage, slippage=slippage)
             if res:
                 print("Транзакция на продажу прошла успешно")
-                return True
+                return res
             else:
                 print("Транзакция на продажу не удалась")
                 return False
-        
+
+        except Exception as e:
+            print("Error occurred during 'sell' transaction:", e)
+            return False
 
 
 # -------------------------------------------------------------------------

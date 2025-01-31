@@ -385,8 +385,6 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             "🔄 Выполняется покупка токена...\n"
             "Пожалуйста, подождите"
         )
-
-        # Get token price before transaction
         token_info = await token_info_service.get_token_info(token_address)
         sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
         # Get token price before transaction
@@ -1398,7 +1396,6 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
         await state.clear()
 
 
-
 @router.message(F.text.len() == 44 and StateFilter(None), flags={"priority": 1})
 async def handle_auto_buy(message: types.Message, state: FSMContext, session: AsyncSession,
                           solana_service: SolanaService):
@@ -1641,7 +1638,5 @@ async def cancel_limit_order(callback_query: types.CallbackQuery, session: Async
     except Exception as e:
         logger.error(f"Error cancelling limit order: {e}")
         await callback_query.answer("❌ Произошла ошибка при отмене ордера")
-
-
 
     

@@ -4,7 +4,8 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 # COMPUTE_UNIT_PRICE  # todo: change to select from db
 from .solana_client import SolanaClient
-from .utils import get_bonding_curve_address, find_associated_bonding_curve
+from .utils import get_bonding_curve_address, find_associated_bonding_curve, calculate_bonding_curve_price
+from .amm4_solana_client import RaydiumAmmV4
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +66,13 @@ class UserTransactionHandler:
             # Convert token address to Pubkey
             mint = Pubkey.from_string(token_address)
             logger.info(f"Converted to Pubkey: {mint}")
-
-            # Get bonding curve addresses
+            tx_signature = RaydiumAmmV4().buy_exec(mint, amount_sol, slippage)
+            if tx_signature:
+                return tx_signature
             bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
             associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
             logger.info(f"Got bonding curve: {bonding_curve_address}")
             logger.info(f"Got associated bonding curve: {associated_bonding_curve}")
-
             # Execute buy transaction using SolanaClient
             logger.info(f"Executing buy transaction for {amount_sol} SOL with {slippage}% slippage")
             tx_signature = await self.client.buy_token(
@@ -117,7 +118,9 @@ class UserTransactionHandler:
         try:
             # Convert token address to Pubkey
             mint = Pubkey.from_string(token_address)
-            
+            tx_signature = RaydiumAmmV4().sell_exec(mint, sell_percentage, slippage)
+            if tx_signature:
+                return tx_signature
             # Get bonding curve addresses
             bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
             associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
