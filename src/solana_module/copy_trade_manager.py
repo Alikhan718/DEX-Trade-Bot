@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from solders.signature import Signature
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-
+from src.services.token_info import TokenInfoService
 from src.bot.handlers.buy import _format_price
 from .solana_monitor import SolanaMonitor
 from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User, Trade
 from .solana_client import SolanaClient, LAMPORTS_PER_SOL
+from .transaction_handler import UserTransactionHandler
 from .utils import get_bonding_curve_address, find_associated_bonding_curve
 from solders.pubkey import Pubkey
 
@@ -199,10 +200,13 @@ class CopyTradeManager:
                                 token_amount = token_balance * (trade.copy_percentage / 100)
                                 logger.info(
                                     f"[MANAGER] Calculated token amount to sell: {token_amount} ({trade.copy_percentage}%)")
+                                token_info_service = TokenInfoService()
 
                                 # Проверяем минимальную сумму в SOL после конвертации
-                                curve_state = await user_client.get_pump_curve_state(bonding_curve_address)
-                                token_price_sol = user_client.calculate_pump_curve_price(curve_state)
+                                token_info = await token_info_service.get_token_info(token_address)
+                                sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
+                                # Get token price before transaction
+                                token_price_sol = token_info.price_usd / sol_price_usd.price_usd
                                 estimated_sol = token_amount * token_price_sol
 
                                 if trade.min_amount and estimated_sol < trade.min_amount:
@@ -383,25 +387,20 @@ class CopyTradeManager:
 
                         mint = token_address  # token_address уже является Pubkey
                         logger.info(f"[MANAGER] Using mint address: {mint}")
-                        bonding_curve_address, _ = get_bonding_curve_address(mint, user_client.PUMP_PROGRAM)
-                        associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
+                        th = UserTransactionHandler(user_client.load_keypair(), user_client.compute_unit_price)
 
                         # Выполняем транзакцию
                         logger.info(f"[MANAGER] Executing {tx_type} transaction for user {trade.user_id}")
                         try:
                             if tx_type == "BUY":
-                                result = await user_client.buy_token(
+                                result = await th.buy_token(
                                     mint=mint,
-                                    bonding_curve=bonding_curve_address,
-                                    associated_bonding_curve=associated_bonding_curve,
                                     amount=copy_amount,
                                     slippage=trade.buy_slippage / 100  # Convert percentage to decimal
                                 )
                             else:  # SELL
-                                result = await user_client.sell_token(
+                                result = await th.sell_token(
                                     mint=mint,
-                                    bonding_curve=bonding_curve_address,
-                                    associated_bonding_curve=associated_bonding_curve,
                                     token_amount=copy_amount,  # Здесь copy_amount это количество токенов
                                     min_amount=trade.sell_slippage / 100  # Convert percentage to decimal
                                 )
