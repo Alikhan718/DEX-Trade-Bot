@@ -45,7 +45,7 @@ class Config:
         'https://free.rpcpool.com',  # Public RPC
         'https://api.mainnet.solana.com',  # Public RPC
     ]
-    SOLANA_RPC_URL = SOLANA_RPC_URLS[0]  # Use public RPC by default
+    SOLANA_RPC_URL = get_env_variable('SOLANA_RPC_URL', SOLANA_RPC_URLS[0])  # Use public RPC by default
     BOT_USERNAME = get_env_variable('BOT_USERNAME', 'DEX_Copy_Trade_Bot')
 
     # Logging configuration

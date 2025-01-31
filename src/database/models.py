@@ -1,3 +1,5 @@
+from enum import unique, Enum
+from sqlalchemy import Enum as SQLEnum, TypeDecorator, SmallInteger
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Float, DateTime, Text, BigInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -157,6 +159,12 @@ class User(Base):
                 raise ValueError(f"Failed to encrypt private key: {str(e)}")
 
 
+@unique
+class TransactionType(Enum):
+    BUY = 0
+    SELL = 1
+
+
 class Trade(Base):
     __tablename__ = "trades"
 
@@ -164,10 +172,10 @@ class Trade(Base):
     user_id = Column(Integer, ForeignKey('users.id'), index=True)
     token_address = Column(String(44), nullable=False, index=True)
     amount = Column(Float, nullable=False)  # Amount in tokens
-    price = Column(Float, nullable=False)  # Price in SOL
+    price_usd = Column(Float, nullable=False)
     amount_sol = Column(Float)  # Amount in SOL for the transaction
-    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
-    is_buy = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    transaction_type = Column(SmallInteger, nullable=True)  # 0 - buy, 1 - sell
     status = Column(String(20), default='pending', index=True)  # pending, completed, failed
     gas_fee = Column(Float)
     transaction_hash = Column(String(88), unique=True)  # Solana transaction hash

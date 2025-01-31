@@ -1,5 +1,5 @@
 command to generate migration:
- - alembic revision --autogenerate -m "Your migration message"
+ - alembic revision --autogenerate -m "change trades add transaction type remove is_buy"
 command to execute migration
  - alembic upgrade head
 
