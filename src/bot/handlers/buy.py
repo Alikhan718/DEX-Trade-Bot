@@ -1480,8 +1480,8 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         # Инициализируем обработчик транзакций
         try:
             user_id = get_real_user_id(message)
-            aut_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
-            settings = await get_user_setting(user_id, aut_buy_settings['type'], session)
+            auto_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
+            settings = await get_user_setting(user_id, auto_buy_settings['type'], session)
             tx_handler = UserTransactionHandler(user.private_key, settings['gas_fee'])
         except ValueError as e:
             logger.error(f"Failed to initialize transaction handler: {e}")
