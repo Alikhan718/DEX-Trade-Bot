@@ -347,6 +347,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
 
         tx_signature = await tx_handler.sell_token(
             token_address=token_address,
+            sell_percentage=sell_percentage,
             amount_tokens=amount_tokens,
             slippage=slippage
         )
@@ -359,7 +360,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             await status_message.edit_text(
                 "✅ Токен успешно продан!\n\n"
                 f"💰 Продано: {_format_price(amount_tokens)} токенов ({sell_type})\n"
-                f"💵 Цена: {(current_price_sol)} SOL\n"
+                f"💵 Цена: {_format_price(current_price_sol)} SOL\n"
                 f"💰 Получено: {_format_price(amount_tokens * current_price_sol)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",

@@ -62,13 +62,12 @@ class UserTransactionHandler:
         """
         try:
             radium = RaydiumAmmV4(self.client.payer)
-            radium.payer_keypair = self.client.payer
             logger.info(f"Starting buy_token for address: {token_address}")
 
             # Convert token address to Pubkey
             mint = Pubkey.from_string(token_address)
             logger.info(f"Converted to Pubkey: {mint}")
-            tx_signature = radium.buy_exec(mint, amount_sol, slippage)
+            tx_signature = await radium.buy_exec(mint, amount_sol, slippage)
             if tx_signature:
                 return tx_signature
             bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
@@ -119,10 +118,9 @@ class UserTransactionHandler:
         """
         try:
             # Convert token address to Pubkey
-            radium = RaydiumAmmV4()
-            radium.payer_keypair = self.client.payer
+            radium = RaydiumAmmV4(self.client.payer)
             mint = Pubkey.from_string(token_address)
-            tx_signature = radium.sell_exec(mint, sell_percentage, slippage)
+            tx_signature = await radium.sell_exec(mint, sell_percentage, slippage)
             if tx_signature:
                 return tx_signature
             # Get bonding curve addresses

@@ -498,8 +498,13 @@ class SolanaClient:
         token_price_sol = self.calculate_pump_curve_price(curve_state)
 
         # Convert token amount to integer with decimals
-        amount = int(params['token_amount'] * 10 ** TOKEN_DECIMALS)
+        amount = int(params['token_amount'])
         min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
+        print(amount, token_balance, min_sol_output)
+        if amount > token_balance:
+            logger.error("Запрошено продать больше токенов, чем доступно!")
+            return  # или выбросить исключение
+        
 
         logger.info(f"Selling {token_balance_decimal} tokens")
         logger.info(f"Minimum SOL output: {min_sol_output / LAMPORTS_PER_SOL:.10f} SOL")
@@ -906,43 +911,27 @@ class SolanaClient:
     async def get_tokens(self, wallet_address: str, tx_handler=None) -> list:
         """Оптимизированный метод получения токенов кошелька."""
         token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
-
+        
         if not token_accounts:
             return []
+        
+        mints = []
 
         # Получаем последние транзакции для всех токенов ПАРАЛЛЕЛЬНО
         signature_tasks = [self.client.get_signatures_for_address(token) for token in token_accounts]
         signatures = await asyncio.gather(*signature_tasks, return_exceptions=True)
+        for sss in signatures:
+            for i in range(len(sss.value)):
+                transaction = await self.get_transaction(sss.value[i].signature)
+                if transaction['token_address']:
+                    mints.append(transaction['token_address'])
+                    break
 
-        # Извлекаем последние подписи, если они есть
-        last_signatures = [
-            sig.value[0].signature for sig in signatures if hasattr(sig, "value") and sig.value
-        ]
-
-        if not last_signatures:
-            logger.info("No transactions found for tokens.")
-            return []
-
-        # Параллельно запрашиваем информацию о транзакциях
-        transaction_tasks = [self.get_transaction(sig) for sig in last_signatures]
-        transactions = await asyncio.gather(*transaction_tasks, return_exceptions=True)
-
-        mints = []
         token_tasks = []
-
-        for mint, tx in zip(token_accounts, transactions):
-            if isinstance(tx, Exception):
-                logger.error(f"Skipping token {mint} due to transaction fetch error: {tx}")
-                continue
-
-            token_address = tx.get("token_address") if tx else None
-            if not token_address:
-                logger.error(f"Skipping token {mint} due to missing token_address in transaction")
-                continue
-
-            # Создаем асинхронную задачу для получения информации о токене
-            token_tasks.append(self.token_info(token_address))
-
+        for mint in mints:
+            token_tasks.append(self.token_info(str(mint)))
+            
+        ans = []
         # Запрашиваем всю информацию о токенах параллельно
         token_infos = await asyncio.gather(*token_tasks, return_exceptions=True)
         for mint, ti in zip(token_accounts, token_infos):
@@ -969,12 +958,12 @@ class SolanaClient:
                         append = False
                     balance *= priceUsd
                 if append:
-                    mints.append((address, market_cap, token_name, token_symbol, balance))
+                    ans.append((address, market_cap, token_name, token_symbol, balance))
             except (KeyError, TypeError) as e:
                 traceback.print_exc()
                 logger.error(f"Error extracting token info for {mint}: {e}")
 
-        return mints
+        return ans
 
 
 def check_mint(account: Pubkey) -> bool:
