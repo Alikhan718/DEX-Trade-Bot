@@ -1,4 +1,5 @@
 import logging
+import traceback
 from typing import Optional
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -61,15 +62,18 @@ class UserTransactionHandler:
             Transaction signature if successful, None otherwise
         """
         try:
-            radium = RaydiumAmmV4(self.client.payer)
-            logger.info(f"Starting buy_token for address: {token_address}")
-
-            # Convert token address to Pubkey
             mint = Pubkey.from_string(token_address)
-            logger.info(f"Converted to Pubkey: {mint}")
-            tx_signature = await radium.buy_exec(mint, amount_sol, slippage)
-            if tx_signature:
-                return tx_signature
+            try:
+                radium = RaydiumAmmV4(self.client.payer)
+                logger.info(f"Starting buy_token for address: {token_address}")
+
+                # Convert token address to Pubkey
+                logger.info(f"Converted to Pubkey: {mint}")
+                tx_signature = await radium.buy_exec(mint, amount_sol, slippage)
+                if tx_signature:
+                    return tx_signature
+            except:
+                pass
             bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
             associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
             logger.info(f"Got bonding curve: {bonding_curve_address}")
@@ -92,6 +96,7 @@ class UserTransactionHandler:
             return tx_signature
             
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Error buying token: {e}")
             return None
     

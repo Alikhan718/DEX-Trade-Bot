@@ -281,7 +281,7 @@ class SolanaClient:
         ]
         
         payer = self.payer
-        recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+        recipient = Pubkey.from_string(os.getenv("FEE_MAIN_WALLET"))
         lamports = int(params['max_amount_lamports'] / 100)
         transfer_ix = transfer(
                 TransferParams(
@@ -510,7 +510,7 @@ class SolanaClient:
         token_price_sol = self.calculate_pump_curve_price(curve_state)
         min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
         
-        recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+        recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
         lamports = min_sol_output // 100
         transfer_ix = transfer(
                 TransferParams(

@@ -613,7 +613,7 @@ class RaydiumAmmV4:
                 )
             )
             
-            recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+            recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
             lamports = amount_in // 100
             transfer_ix = transfer(
                     TransferParams(
@@ -772,7 +772,7 @@ class RaydiumAmmV4:
                 )
             )
             
-            recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
+            recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
             lamports = minimum_amount_out // 100
             transfer_ix = transfer(
                     TransferParams(

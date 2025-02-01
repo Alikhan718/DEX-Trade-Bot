@@ -371,7 +371,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             )
             trade = Trade(
                 user_id=user.id,
-                token_address=token_address,
+                token_address=str(token_address),
                 amount=amount_tokens,
                 price_usd=current_price_sol,
                 amount_sol=amount_tokens * current_price_sol,
@@ -379,7 +379,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                 transaction_type=1,
                 status="SUCCESS",
                 gas_fee=sell_settings['gas_fee'],
-                transaction_hash=tx_signature,
+                transaction_hash=str(tx_signature),
             )
             session.add(trade)
             await session.commit()

@@ -199,7 +199,21 @@ class SolanaMonitor:
             if self.is_monitoring and leader not in self.tasks:
                 task = asyncio.create_task(self.connect_and_subscribe(leader))
                 self.tasks[leader] = task
-                logger.info(f"Started monitoring leader {leader}.")
+                logger.info(f"Started monitoring leader {leader[:4]}...{leader[:-4]}.")
+
+    def remove_leader(self, leader: str):
+        """
+        Remove leader from monitor. Starts monitoring immediately if monitoring is active.
+        """
+        if leader not in self.leader_follower_map:
+            self.leader_follower_map[leader] = set()
+            logger.info(f"Added leader {leader} for monitoring.")
+
+            # Start monitoring the new leader if the monitor is active
+            if self.is_monitoring and leader in self.tasks:
+                self.tasks[leader].cancel()
+                del self.tasks[leader]
+                logger.info(f"Removed monitoring for leader {leader[:4]}...{leader[:-4]}.")
 
     def add_relationship(self, leader: str, follower: str):
         """
@@ -208,18 +222,25 @@ class SolanaMonitor:
         if leader not in self.leader_follower_map:
             self.add_leader(leader)
         self.leader_follower_map[leader].add(follower)
-        logger.info(f"Added follower {follower} for leader {leader}.")
+        logger.info(f"Added follower copy_trade_id:{follower} for leader {leader}.")
 
     async def start_monitoring(self):
         """
         Start monitoring all leaders in separate WebSocket connections.
         """
         self.is_monitoring = True
+        count = 0
+        for leader in self.tasks.keys():
+            if leader not in self.leader_follower_map.keys():
+                self.tasks[leader].cancel()
+                del self.tasks[leader]
+                logger.info(f"Removed leader {leader} from monitoring.")
         for leader in self.leader_follower_map.keys():
             if leader not in self.tasks:
+                count += 1
                 task = asyncio.create_task(self.connect_and_subscribe(leader))
                 self.tasks[leader] = task
-        logger.info(f"Started monitoring {len(self.tasks)} leaders.")
+        logger.info(f"Started monitoring {count} leaders.")
 
     async def stop_monitoring(self):
         """

@@ -42,7 +42,6 @@ class CopyTradeService:
 
             # Initialize manager with bot instance
             self.manager = CopyTradeManager(self.solana_client, self._bot)
-
             # Store session factory
             self.Session = async_sessionmaker(
                 session.bind,

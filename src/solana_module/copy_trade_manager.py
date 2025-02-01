@@ -13,10 +13,9 @@ from aiogram.exceptions import TelegramAPIError
 from src.services.token_info import TokenInfoService
 from src.bot.handlers.buy import _format_price
 from .solana_monitor import SolanaMonitor
-from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User, Trade
+from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User
 from .solana_client import SolanaClient, LAMPORTS_PER_SOL
 from .transaction_handler import UserTransactionHandler
-from .utils import get_bonding_curve_address, find_associated_bonding_curve
 from solders.pubkey import Pubkey
 
 logger = logging.getLogger(__name__)
@@ -76,6 +75,7 @@ class CopyTradeManager:
 
     async def process_transaction(self, leader: str, tx_type: str, signature: str, token_address: str,
                                   session: AsyncSession):
+        token_address = str(token_address)
         """Обработать транзакцию и создать копии для подписчиков"""
         try:
             transaction_start_time = time.time()
@@ -272,7 +272,7 @@ class CopyTradeManager:
                             copies_count = await session.scalar(
                                 select(func.count(CopyTradeTransaction.id))
                                 .where(CopyTradeTransaction.copy_trade_id == trade.id)
-                                .where(CopyTradeTransaction.token_address == token_address)
+                                .where(CopyTradeTransaction.token_address == str(token_address))
                                 .where(CopyTradeTransaction.status == "SUCCESS")
                             ) or 0
 
@@ -385,24 +385,25 @@ class CopyTradeManager:
 
                         # Получаем адреса кривых
 
-                        mint = token_address  # token_address уже является Pubkey
+                        mint = str(token_address)  # token_address уже является Pubkey
                         logger.info(f"[MANAGER] Using mint address: {mint}")
-                        th = UserTransactionHandler(user_client.load_keypair(), user_client.compute_unit_price)
+                        th = UserTransactionHandler(private_key, user_client.compute_unit_price)
 
                         # Выполняем транзакцию
                         logger.info(f"[MANAGER] Executing {tx_type} transaction for user {trade.user_id}")
                         try:
                             if tx_type == "BUY":
                                 result = await th.buy_token(
-                                    mint=mint,
-                                    amount=copy_amount,
-                                    slippage=trade.buy_slippage / 100  # Convert percentage to decimal
+                                    token_address=mint,
+                                    amount_sol=copy_amount,
+                                    slippage=trade.buy_slippage  # Convert percentage to decimal
                                 )
                             else:  # SELL
                                 result = await th.sell_token(
-                                    mint=mint,
-                                    token_amount=copy_amount,  # Здесь copy_amount это количество токенов
-                                    min_amount=trade.sell_slippage / 100  # Convert percentage to decimal
+                                    token_address=mint,
+                                    amount_tokens=copy_amount,  # Здесь copy_amount это количество токенов
+                                    sell_percentage=trade.copy_percentage,  # Здесь copy_percentage
+                                    slippage=trade.sell_slippage
                                 )
 
                             # Если результат это Signature - значит транзакция успешна
@@ -435,7 +436,7 @@ class CopyTradeManager:
 
                             else:
                                 # Если результат это словарь с ошибкой
-                                error_message = result.get("error", "Transaction execution failed")
+                                error_message = (result or {}).get("error", "Transaction execution failed")
                                 logger.error(f"[MANAGER] Transaction failed for user {trade.user_id}: {error_message}")
                                 new_transaction.status = "FAILED"
                                 new_transaction.error = error_message
@@ -511,15 +512,18 @@ class CopyTradeManager:
             self.monitor.add_leader(wallet)
         self.active_trades[wallet].add(copy_trade)
         self.monitor.add_relationship(wallet, str(copy_trade.id))
+        await self.monitor.start_monitoring()
 
     async def remove_copy_trade(self, copy_trade: CopyTrade):
         """Удалить копитрейд из мониторинга"""
         wallet = copy_trade.wallet_address
         if wallet in self.active_trades:
             self.active_trades[wallet].discard(copy_trade)
+            self.monitor.remove_leader(wallet)
             if not self.active_trades[wallet]:
                 del self.active_trades[wallet]
-                # TODO: Remove leader from monitor
+        await self.monitor.start_monitoring()
+
 
     async def handle_transaction_with_session(self, leader: str, tx_type: str, signature: str,
                                               token_address: Optional[str]):

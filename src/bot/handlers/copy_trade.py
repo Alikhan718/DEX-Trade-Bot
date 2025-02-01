@@ -287,7 +287,6 @@ async def handle_copy_trade_settings_edit_base(
             select(CopyTrade).where(CopyTrade.id == copy_trade_id)
         )
         item = result.unique().scalar_one_or_none()
-        print("INFOOO:", not item, attribute not in compact_attributes, item.user_id != user.id, attribute)
         if not item \
                 or attribute not in compact_attributes \
                 or item.user_id != user.id:
@@ -339,7 +338,6 @@ async def handle_copy_trade_settings_edit_base(
             )
         )
         ctt_list = stmt.unique().scalars().all()
-        print([ctt.amount_sol for ctt in ctt_list ])
         ct_pnl = Decimal(0)
         if len(ctt_list):
             ct_pnl = sum([
@@ -626,7 +624,6 @@ async def handle_remove_excluded_token(callback: CallbackQuery, session: AsyncSe
     await show_excluded_tokens(callback, session)
 
 
-# todo think bout it
 @router.callback_query(F.data == "ct_exclude_tokens")
 async def show_excluded_tokens(callback: CallbackQuery, session: AsyncSession):
     """Показать меню исключенных токенов"""
