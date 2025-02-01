@@ -143,7 +143,7 @@ class CopyTradeManager:
                         continue
 
                     # Проверяем настройки копирования продаж
-                    if tx_type == "SELL" and not trade.copy_sells:
+                    if tx_type == "SELL" and trade.copy_sells:
                         logger.info(f"[MANAGER] Sell copying is disabled for trade {trade.id}")
                         await self.send_notification(
                             user.telegram_id,
@@ -182,6 +182,8 @@ class CopyTradeManager:
                             await session.commit()
                             continue
                         logger.info(f"[MANAGER] Retrieved transaction info")
+                        token_info_service = TokenInfoService()
+                        sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
 
                         if tx_type == "SELL":
                             # Для SELL транзакций нам нужно получить баланс токенов пользователя
@@ -200,11 +202,10 @@ class CopyTradeManager:
                                 token_amount = token_balance * (trade.copy_percentage / 100)
                                 logger.info(
                                     f"[MANAGER] Calculated token amount to sell: {token_amount} ({trade.copy_percentage}%)")
-                                token_info_service = TokenInfoService()
+
 
                                 # Проверяем минимальную сумму в SOL после конвертации
                                 token_info = await token_info_service.get_token_info(token_address)
-                                sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
                                 # Get token price before transaction
                                 token_price_sol = token_info.price_usd / sol_price_usd.price_usd
                                 estimated_sol = token_amount * token_price_sol
@@ -419,6 +420,7 @@ class CopyTradeManager:
                                 token_info = await user_client.token_info(token_address)
                                 price_usd = token_info['priceUsd']
                                 # Send success notification
+                                token_price_sol = float(price_usd) / sol_price_usd.price_usd
 
                                 success_message = (
                                     f"✅ Успешно скопирована транзакция {tx_type}\n\n"
@@ -427,7 +429,7 @@ class CopyTradeManager:
                                     f"💵 Цена вашего токена (На момент покупки): {_format_price(price_usd)} SOL\n"
                                     f"💎 Токен: <code>{token_address}</code>\n"
                                     f"💰 Сумма: {_format_price(amount_sol)} SOL\n"
-                                    f"🔢 Количество токенов: {_format_price(copy_amount)}\n"
+                                    f"🔢 Количество токенов: {_format_price(amount_sol / token_price_sol)}\n"
                                     f"⏱ Время выполнения: {execution_time:.2f} сек\n"
                                     f"🔗 Транзакция: <a href='https://solscan.io/tx/{copied_signature}'>Solscan</a>"
                                 )

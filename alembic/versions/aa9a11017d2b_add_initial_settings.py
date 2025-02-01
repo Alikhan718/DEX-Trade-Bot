@@ -34,6 +34,7 @@ def upgrade() -> None:
                 "slug": "auto_buy",
                 "default_value": {
                     "enabled": True,
+                    "type": "buy",
                     "amount_sol": 0.01,
                     "slippage": 5,
                     "max_mc": None,

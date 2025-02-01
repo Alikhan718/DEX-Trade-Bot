@@ -156,4 +156,4 @@ class UserTransactionHandler:
             
         except Exception as e:
             logger.error(f"Error selling token: {e}")
-            return None 
+            return None

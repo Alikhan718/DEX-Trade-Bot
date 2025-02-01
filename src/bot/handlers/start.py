@@ -29,7 +29,7 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     ],
     # Auto-buy settings
     [
-        InlineKeyboardButton(text="⚡️ Автобай", callback_data="auto_buy_settings")
+        InlineKeyboardButton(text="⚡️ Автобай / Автоселл", callback_data="auto_buy_settings")
     ],
     # Trading features
     [

@@ -1207,11 +1207,18 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text=f"{'🟢' if settings['enabled'] else '🔴'} Автобай",
+                text=f"{'🟢' if settings['type'] == 'buy' else '⚪️'} Покупка",
+                callback_data="toggle_auto_buy_type_buy"
+            ),InlineKeyboardButton(
+                text=f"{'🟢' if settings['type'] == 'sell' else '⚪️'} Продажа",
+                callback_data="toggle_auto_buy_type_sell"
+            )],
+            [InlineKeyboardButton(
+                text=f"{'🟢 Активно' if settings['enabled'] else '🔴 Не Активно'} ",
                 callback_data="toggle_auto_buy"
             )],
             [InlineKeyboardButton(
-                text=f"💰 Сумма: {settings['amount_sol']} SOL",
+                text=f"💰 {'Сумма' if settings['type'] == 'buy' else 'Процент'}: {settings['amount_sol']}{' SOL' if settings['type'] == 'buy' else '%'}",
                 callback_data="set_auto_buy_amount"
             )],
             [InlineKeyboardButton(
@@ -1222,9 +1229,9 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
         ])
 
         text = (
-            "⚡️ Настройки Автобая\n\n"
+            "⚡️ Настройки Авто (Продажи / Покупки)\n\n"
             f"Статус: {'Включен' if settings['enabled'] else 'Выключен'}\n"
-            f"Сумма покупки: {settings['amount_sol']} SOL\n"
+            f"{'Сумма покупки' if settings['type'] == 'buy' else 'Процент продажи'}: {settings['amount_sol']}{' SOL' if settings['type'] == 'buy' else '%'}\n"
             f"Slippage: {settings['slippage']}%\n"
         )
 
@@ -1257,16 +1264,39 @@ async def toggle_auto_buy(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("❌ Произошла ошибка")
 
 
+@router.callback_query(lambda c: c.data.startswith("toggle_auto_buy_type_"), flags={"priority": 3})
+async def toggle_auto_buy(callback: types.CallbackQuery, session: AsyncSession):
+    """Включить/выключить автобай"""
+    try:
+        params = callback.data
+        setting_type = params.replace('toggle_auto_buy_type_', '')
+        user_id = get_real_user_id(callback)
+        settings = await get_user_setting(user_id, 'auto_buy', session)
+        if settings['type'] == setting_type:
+            return await callback.answer("Этот тип уже выбран", show_alert=True)
+        settings['type'] = setting_type
+        if setting_type == 'sell':
+            settings['amount_sol'] = 100
+        else:
+            settings['amount_sol'] = 0.01
+        await update_user_setting(user_id, 'auto_buy', settings, session)
+        await show_auto_buy_settings(callback, session)
+
+    except Exception as e:
+        logger.error(f"Error toggling auto-buy: {e}")
+        await callback.answer("❌ Произошла ошибка")
+
+
 @router.callback_query(F.data == "set_auto_buy_amount", flags={"priority": 3})
-async def handle_set_auto_buy_amount(callback: types.CallbackQuery, state: FSMContext):
+async def handle_set_auto_buy_amount(callback: types.CallbackQuery, state: FSMContext, session):
     """Установка суммы для автобая"""
     try:
-        await callback.message.edit_text(
-            "💰 Введите сумму для автопокупки в SOL\n"
-            "Например: 0.1",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="auto_buy_settings")]
-            ])
+        user_id = get_real_user_id(callback)
+        setting = await get_user_setting(user_id, 'auto_buy', session)
+        await callback.message.answer(
+            f"💰 {'Введите сумму для автопокупки в SOL' if setting['type'] == 'buy' else 'Введите сумму для автопродажи в %'}\n"
+            f"Например: {'0.1' if setting['type'] == 'buy' else '100'}",
+            reply_markup=ForceReply(selective=True)
         )
         await state.set_state(AutoBuySettingsStates.ENTER_AMOUNT)
     except Exception as e:
@@ -1279,28 +1309,27 @@ async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext
     """Обработка ввода суммы для автобая"""
     try:
         # Проверяем введенное значение
+        user_id = get_real_user_id(message)
+        settings = await get_user_setting(user_id, 'auto_buy', session)
         try:
             amount = float(message.text.strip())
-            if amount <= 0:
+            if amount <= 0 or (amount >= 100 and settings['type'] == 'sell'):
                 raise ValueError("Amount must be positive")
         except ValueError:
             await message.reply(
                 "❌ Неверный формат суммы\n"
-                "Пожалуйста, введите положительное число",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="auto_buy_settings")]
-                ])
+                "Пожалуйста, введите положительное число" + f" {'от 1 до 100' if settings['type'] == 'sell' else 'от 0'}",
+                reply_markup=ForceReply(selective=True)
             )
             return
-        user_id = get_real_user_id(message)
-        settings = await get_user_setting(user_id, 'auto_buy', session)
+
         settings['amount_sol'] = amount
         await update_user_setting(user_id, 'auto_buy', settings, session)
 
         # Очищаем состояние и показываем обновленные настройки
         await state.clear()
-        await message.answer(
-            f"✅ Сумма автопокупки установлена: {amount} SOL"
+        await message.reply(
+            f"✅ Сумма установлена: {amount}{' SOL' if settings['type'] == 'buy' else '%'}"
         )
         # Используем существующую функцию для показа настроек
         await show_auto_buy_settings(message, session)
@@ -1445,16 +1474,14 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         # Отправляем сообщение о начале покупки
         status_message = await message.reply(
             "🔄 Выполняется автоматическая покупка токена...\n"
-            "Пожалуйста, подождите",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ Отменить", callback_data="main_menu")]
-            ])
+            "Пожалуйста, подождите"
         )
 
         # Инициализируем обработчик транзакций
         try:
             user_id = get_real_user_id(message)
-            settings = await get_user_setting(user_id, 'buy', session)
+            aut_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
+            settings = await get_user_setting(user_id, aut_buy_settings['type'], session)
             tx_handler = UserTransactionHandler(user.private_key, settings['gas_fee'])
         except ValueError as e:
             logger.error(f"Failed to initialize transaction handler: {e}")
@@ -1472,18 +1499,24 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
 
         # Получаем информацию о токене перед покупкой
         token_info = await token_info_service.get_token_info(token_address)
-
-        tx_signature = await tx_handler.buy_token(
-            token_address=token_address,
-            amount_sol=amount_sol,
-            slippage=slippage
-        )
+        if auto_buy_settings['type'] == 'buy':
+            tx_signature = await tx_handler.buy_token(
+                token_address=token_address,
+                amount_sol=amount_sol,
+                slippage=slippage
+            )
+        else:
+            tx_signature = await tx_handler.sell_token(
+                token_address=token_address,
+                sell_percentage=amount_sol,
+                slippage=slippage
+            )
 
         if tx_signature:
-            logger.info(f"Auto-buy successful: {tx_signature}")
+            logger.info(f"Auto-{auto_buy_settings['type']} successful: {tx_signature}")
             # Обновляем сообщение об успехе
             await status_message.edit_text(
-                "✅ Токен успешно куплен!\n\n"
+                f"✅ Токен успешно {'Куплен' if auto_buy_settings['type'] == 'buy' else 'Продан'}!\n\n"
                 f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'}\n"
                 f"💰 Потрачено: {_format_price(amount_sol)} SOL {'($' + _format_price(float(token_info.price_usd) * float(amount_sol)) + ')' if token_info and token_info.price_usd else ''}\n"
                 f"⚙️ Slippage: {slippage}%\n"
