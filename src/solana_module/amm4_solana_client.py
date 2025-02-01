@@ -855,7 +855,7 @@ class RaydiumAmmV4:
             res = await self.buy(pair_address=pair_address, sol_in=sol_in, slippage=slippage)
             if res:
                 print("Транзакция на покупку прошла успешно!")
-                return True
+                return res
             else:
                 print("Транзакция на покупку не удалась.")
                 return False
@@ -889,7 +889,7 @@ class RaydiumAmmV4:
             res = await self.sell(pair_address=pair_address, percentage=percentage, slippage=slippage)
             if res:
                 print("Транзакция на продажу прошла успешно!")
-                return True
+                return res
             else:
                 print("Транзакция на продажу не удалась.")
                 return False

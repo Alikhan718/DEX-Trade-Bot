@@ -17,6 +17,7 @@ from .handlers import start, wallet, smart_money, help, buy, rugcheck, copy_trad
 from .services.copy_trade_service import CopyTradeService
 from src.solana_module.limit_orders import AsyncLimitOrders
 
+
 logger = setup_logging()
 
 
