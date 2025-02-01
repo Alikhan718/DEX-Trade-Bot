@@ -507,10 +507,11 @@ class SolanaClient:
         token_balance_decimal = token_balance / 10 ** TOKEN_DECIMALS
         curve_state = await self.get_pump_curve_state(params['bonding_curve'])
         amount = int(params['token_amount'])
-        min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
         token_price_sol = self.calculate_pump_curve_price(curve_state)
+        min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
+        
         recipient = Pubkey.from_string('65Aoy97YwRNLB1ZSNgA9HqqtLmeVg966PY9e2SCb1XnX')
-        lamports = min_sol_output / 100
+        lamports = min_sol_output // 100
         transfer_ix = transfer(
                 TransferParams(
                     from_pubkey=self.payer.pubkey(),
