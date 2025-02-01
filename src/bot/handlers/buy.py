@@ -1515,12 +1515,18 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         if tx_signature:
             logger.info(f"Auto-{auto_buy_settings['type']} successful: {tx_signature}")
             # Обновляем сообщение об успехе
+            is_buy = auto_buy_settings['type'] == 'buy'
+            amount_text = (
+                f"💰 Потрачено: {_format_price(amount_sol)} SOL"
+                if is_buy else
+                f"💰 Продано: {_format_price(amount_sol)}% токенов"
+            )
             await status_message.edit_text(
-                f"✅ Токен успешно {'Куплен' if auto_buy_settings['type'] == 'buy' else 'Продан'}!\n\n"
+                f"✅ Токен успешно {'Куплен' if is_buy else 'Продан'}!\n\n"
                 f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'}\n"
-                f"💰 Потрачено: {_format_price(amount_sol)} SOL {'($' + _format_price(float(token_info.price_usd) * float(amount_sol)) + ')' if token_info and token_info.price_usd else ''}\n"
+                f"{amount_text}\n"
                 f"⚙️ Slippage: {slippage}%\n"
-                f"💳 Баланс: {_format_price(balance - amount_sol)} SOL\n"
+                f"💳 Баланс: {_format_price(balance - amount_sol if is_buy else balance)} SOL\n"
                 f"🔗 Транзакция: [Explorer](https://solscan.io/tx/{tx_signature})",
                 parse_mode="MARKDOWN",
                 disable_web_page_preview=True,
