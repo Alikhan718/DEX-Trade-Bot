@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import os
 from .solana_client import SolanaClient
 from solders.keypair import Keypair
+from src.solana_module.swap import swap_type
 
 load_dotenv()
 
@@ -78,7 +79,7 @@ class SolanaMonitor:
             # logger.info(f"[MONITOR] Transaction logs: {json.dumps(logs, indent=2)}")
 
             # Infer transaction type from logs
-            tx_type = self.infer_type_from_logs(logs)
+            tx_type = self.infer_type_from_logs(signature)
             logger.info(f"[MONITOR] Inferred transaction type: {tx_type}")
 
             if tx_type == "BUY":
@@ -158,34 +159,11 @@ class SolanaMonitor:
             logger.error(f"[MONITOR] Traceback: {traceback.format_exc()}")
             raise
 
-    def infer_type_from_logs(self, logs: list) -> str:
+    def infer_type_from_logs(self, signature) -> str:
         """
         Infer transaction type from logs.
         """
-        if not logs:
-            logger.warning("[MONITOR] No logs found in transaction")
-            return "UNKNOWN"
-
-        logger.info(f"[MONITOR] Analyzing {len(logs)} logs")
-        for log in logs:
-            if isinstance(log, str):
-                logger.info(f"[MONITOR] Analyzing log: {log}")
-                if "Instruction: Buy" in log:
-                    logger.info("[MONITOR] Found BUY instruction")
-                    return "BUY"
-                if "Instruction: Sell" in log:
-                    logger.info("[MONITOR] Found SELL instruction")
-                    return "SELL"
-                # Добавляем дополнительные проверки для определения типа транзакции
-                if "Program log: Executing sell" in log:
-                    logger.info("[MONITOR] Found SELL in program log")
-                    return "SELL"
-                if "Program log: Executing buy" in log:
-                    logger.info("[MONITOR] Found BUY in program log")
-                    return "BUY"
-
-        logger.warning("[MONITOR] Could not determine transaction type from logs")
-        return "UNKNOWN"
+        return swap_type(signature)
 
     def add_leader(self, leader: str):
         """

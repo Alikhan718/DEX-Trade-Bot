@@ -1,5 +1,5 @@
 # /path/to/handlers/smart_money_handlers.py
-
+import re
 import logging
 from aiogram import Router, types
 from aiogram.filters import Command
@@ -8,11 +8,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 import asyncio
 from aiogram import F
-
+from aiogram.filters import Command
 from src.services.smart_money import SmartMoneyTracker, token_info  # Импортируем класс
 from src.bot.states import SmartMoneyStates
 from src.bot.handlers.buy import _format_price
 from solders.pubkey import Pubkey
+from src.solana_module.scrape import scrape_dune_wallet_data
 
 logger = logging.getLogger(__name__)
 
@@ -145,16 +146,15 @@ async def handle_token_address_input(message: types.Message, state: FSMContext):
             "Это может занять некоторое время"
         )
 
-        # Анализируем токен через SmartMoneyTracker
-        traders = await smart_money_tracker.analyze_accounts(Pubkey.from_string(token_address))
-        print(f"Traders: {traders}")
+        # Анализируем токен через веб-скрейпинг
+        traders = scrape_dune_wallet_data(token_address)
         metadata = token_info(token_address)
         result_message = format_smart_money_message(metadata, traders)
 
         # Отправляем результат
         await status_message.edit_text(
             result_message,
-            parse_mode="MARKDOWN",
+            parse_mode="HTML",
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
@@ -173,15 +173,43 @@ async def handle_token_address_input(message: types.Message, state: FSMContext):
 def format_smart_money_message(metadata, traders):
     """Форматируем сообщение с результатами анализа"""
     metadata_message = (
-        f"🔹 **Токен:** {metadata.get('baseTokenName')} ({metadata['baseToken'].get('symbol')})\n"
-        f"💰 **Цена:** {_format_price(metadata.get('priceUsd'))} USD\n"
-        f"📈 **Объём:** {_format_price(metadata.get('marketCap'))} USD\n\n"
+        f"🔹 <b>Токен:</b> {metadata.get('baseTokenName')} ({metadata['baseToken'].get('symbol')})\n"
+        f"💰 <b>Цена:</b> {_format_price(metadata.get('priceUsd'))} USD\n"
+        f"📈 <b>Объём:</b> {_format_price(metadata.get('marketCap'))} USD\n\n"
     )
-    traders_message = "🧑‍💼 **Крупнейшие трейдеры:**\n\n"
-    for trader in traders:
+
+    traders_message = "🧑‍💼 <b>Крупнейшие трейдеры:</b>\n\n"
+    for trader in traders[:15]:  # Ограничиваем список до 5 трейдеров
         traders_message += (
-            f"  - 📜 Адрес: `{trader['address']}`\n"
-            f"    🔹 Баланс: {_format_price(trader['balance'])} USD\n"
-            f"    🔹 Средний ROI: {_format_price(trader['roi'])}%\n\n"
+            #f"📜 **Адрес:** [{trader.get('wallet', 'Неизвестно')}](https://t.me/test2737237bot?wallet={trader.get('wallet', 'Неизвестно')})\n"
+            f"📜 <b>Адрес:</b> <code>{trader.get('wallet', 'Неизвестно')}</code>\n"
+            f"💰 <b>Куплено:</b> {trader.get('sum_buys', 0)} USD\n"
+            f"💵 <b>Продано:</b> {trader.get('sum_sells', 0)} USD\n"
+            f"📈 <b>Прибыль PnL:</b> {trader.get('sum_pnl', 0)} USD\n"
+            f"📊 <b>ROI:</b> {trader.get('roi_real', 0)}\n"
+            f"🔍 <a href=\"{re.search(r'href=\"([^\"]+)\"', trader['solscan']).group(1)}\">Solscan</a> | "
+            f"📊 <a href=\"{re.search(r'href=\"([^\"]+)\"', trader['wallet_pnl']).group(1)}\">Wallet PnL</a> | "
+            f"🤖 <a href=\"{re.search(r'href=\"([^\"]+)\"', trader['gmgn']).group(1)}\">gmgn</a> | "
+            f"🌐 <a href=\"{re.search(r'href=\"([^\"]+)\"', trader['cielo']).group(1)}\">cielo</a>\n\n"
         )
+
     return metadata_message + traders_message
+
+
+@router.message(Command('wallet'))
+async def handle_wallet_command(message: types.Message):
+    """Обработчик команды для ввода адреса кошелька"""
+    parts = message.text.split()[1]
+    if len(parts) < 2:
+        await message.reply(
+            "�� Пожалуйста, укажите адрес кошелька после команды\n"
+            "Пример: `/wallet 0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1`",
+            parse_mode="MARKDOWN"
+        )
+        return
+    print('AAAAAAAAAAAAAAAAAAAA', parts)
+
+    wallet_address = parts[1]
+
+    # Проверяем валидность адреса
+    
