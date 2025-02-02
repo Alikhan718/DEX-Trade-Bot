@@ -8,7 +8,7 @@ from solders.pubkey import Pubkey
 from datetime import datetime
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
-from src.database.models import User, Trade
+from src.database.models import User, Trade, ReferralRecords
 from .buy import _format_price
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
@@ -383,6 +383,17 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
             )
             session.add(trade)
             await session.commit()
+            if user.referral_id:
+                logger.info("User has referral")
+                ref_record = ReferralRecords(
+                    user_id=user.referral_id,
+                    trade_id=trade.id or None,
+                    amount_sol=amount_tokens * current_price_sol * 0.005,
+                    created_at=datetime.now(),
+                    is_sent=False
+                )
+                session.add(ref_record)
+                await session.commit()
         else:
             logger.error("Sell transaction failed: No signature returned")
             # Update error message

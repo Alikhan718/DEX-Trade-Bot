@@ -221,6 +221,7 @@ async def handle_edit_setting(callback: CallbackQuery, state: FSMContext, sessio
         if not copy_trade:
             await callback.answer("Копитрейд не найден", show_alert=True)
             return
+
         setattr(copy_trade, setting, not getattr(copy_trade, setting))
         await session.commit()
         return await show_copy_settings(callback, session, copy_trade_id)
