@@ -509,7 +509,7 @@ class SolanaClient:
         curve_state = await self.get_pump_curve_state(params['bonding_curve'])
         amount = int(params['token_amount'])
         token_price_sol = self.calculate_pump_curve_price(curve_state)
-        min_sol_output = int(float(token_balance_decimal) * float(token_price_sol) * LAMPORTS_PER_SOL * (1 - 0.3))
+        min_sol_output = int(params['min_amount_lamports'] * token_price_sol)
         
         recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
         lamports = min_sol_output // 100
@@ -590,7 +590,7 @@ class SolanaClient:
             'associated_bonding_curve': associated_bonding_curve,
             'associated_token_account': associated_token_account,
             'token_amount': token_amount,
-            'min_amount_lamports': int(min_amount * LAMPORTS_PER_SOL),
+            'min_amount_lamports': int(min_amount * token_amount),
         }
 
         try:

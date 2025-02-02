@@ -74,7 +74,8 @@ def analyze_transaction(tx_data: GetTransactionResp) -> None:
         print(f"Pre-balance:  {change_data['pre_balance']}")
         print(f"Post-balance: {change_data['post_balance']}")
         print(f"Change:       {change_data['change']}")
-        if change_data['change'] > 0:
+        change_data['change'] = float(change_data['change'])
+        if change_data['change'] < 0:
             return 'BUY'
         else:
             return 'SELL'

@@ -70,17 +70,22 @@ class SolanaMonitor:
         try:
             logger.info(f"[MONITOR] Processing transaction for leader {leader}")
             # logger.info(f"[MONITOR] Raw transaction data: {json.dumps(transaction, indent=2)}")
-            
             result = transaction.get("params", {}).get("result", {}).get("value", {})
             signature = result.get("signature", "Unknown")
+            if signature == "Unknown":
+                logger.info(f"[MONITOR] Invalid transaction detected: {signature}")
+                tx_type = "UNKNOWN"
+            else:
+                tx_type = self.infer_type_from_logs(signature)
+                logger.info(f"[MONITOR] Inferred transaction type: {tx_type}")
             logs = result.get("logs", [])
 
             logger.info(f"[MONITOR] Extracted signature: {signature}")
             # logger.info(f"[MONITOR] Transaction logs: {json.dumps(logs, indent=2)}")
 
             # Infer transaction type from logs
-            tx_type = self.infer_type_from_logs(signature)
-            logger.info(f"[MONITOR] Inferred transaction type: {tx_type}")
+            
+            
 
             if tx_type == "BUY":
                 logger.info(f"[MONITOR] BUY transaction detected: {signature}")

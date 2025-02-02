@@ -141,7 +141,7 @@ class UserTransactionHandler:
                 resp = await self.client.client.get_token_account_balance(associated_token_account)
                 token_balance = float(resp.value.amount)
                 # Calculate amount to sell
-                amount_tokens = (token_balance * sell_percentage) / 100
+                amount_tokens = (token_balance * (sell_percentage / 100))
             
             if amount_tokens is None:
                 raise ValueError("Must specify either amount_tokens or sell_percentage")

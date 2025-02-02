@@ -1521,7 +1521,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         else:
             token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(str(token_address)))
             sell_percentage = amount_sol  # we store it as amount_sol in sell case it's actually percentage
-            token_amount = (token_balance / sell_percentage * 100)
+            token_amount = (token_balance * (sell_percentage / 100))
             amount_sol = token_amount * token_price_sol  # amount sol = token amount / token price per sol
             if not token_balance or token_balance == 0 or token_amount > token_balance:
                 return await status_message.edit_text(
