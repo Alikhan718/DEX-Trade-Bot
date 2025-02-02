@@ -1659,10 +1659,16 @@ async def show_limit_orders(callback_query: types.CallbackQuery, session: AsyncS
             if not token_info:
                 continue
 
+            # Формируем информацию в зависимости от типа ордера
+            if order.order_type == 'buy':
+                amount_text = f"💰 Сумма: {_format_price(order.amount_sol)} SOL"
+            else:  # sell
+                amount_text = f"💰 Количество: {_format_price(order.amount_tokens)} токенов"
+
             # Добавляем информацию об ордере
             message_text += (
-                f"🎯 Ордер #{order.id}\n"
-                f"💰 Сумма: {_format_price(order.amount_sol)} SOL\n"
+                f"🎯 Ордер #{order.id} ({order.order_type.upper()})\n"
+                f"{amount_text}\n"
                 f"📈 Триггер: {order.trigger_price_percent}% (${_format_price(order.trigger_price_usd)})\n"
                 f"💎 Токен: {token_info.symbol}\n"
                 f"⚙️ Slippage: {order.slippage}%\n"

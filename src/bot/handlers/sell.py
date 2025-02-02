@@ -8,12 +8,12 @@ from solders.pubkey import Pubkey
 from datetime import datetime
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
-from src.database.models import User, Trade, ReferralRecords
+from src.database.models import User, Trade, ReferralRecords, LimitOrder
 from .buy import _format_price
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.solana_module.utils import get_bonding_curve_address, find_associated_bonding_curve
-from src.bot.states import SellStates
+from src.bot.states import SellStates, LimitSellStates
 from src.bot.crud import get_user_setting, update_user_setting
 from src.solana_module.solana_client import SolanaClient
 from src.solana_module.token_info import token_info
@@ -289,12 +289,65 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         token_balance = data.get("token_balance", 0.0)  # Get token balance from state
         sell_percentage = data.get("sell_percentage", 100.0)  # Default to 100% if not specified
         slippage = data.get("slippage", 1.0)
+        is_limit = data.get("is_limit", False)
+        trigger_price = data.get("trigger_price")
 
         if not token_address:
             logger.error("Missing token address")
             await callback_query.answer("❌ Не указан токен")
             return
 
+        # Get token info for price calculation
+        token_info = await token_info_service.get_token_info(token_address)
+        if not token_info:
+            await callback_query.answer("❌ Не удалось получить информацию о токене")
+            return
+
+        # Handle limit order creation
+        if is_limit:
+            if trigger_price is None:
+                await callback_query.answer("❌ Не указана триггерная цена")
+                return
+
+            # Calculate target price in USD
+            current_price = token_info.price_usd
+            target_price = current_price * (1 + (trigger_price / 100))
+            amount_tokens = token_balance * (sell_percentage / 100)
+
+            # Create limit order
+            limit_order = LimitOrder(
+                user_id=user.id,
+                token_address=token_address,
+                order_type='sell',
+                amount_tokens=amount_tokens,
+                trigger_price_usd=target_price,
+                trigger_price_percent=trigger_price,
+                slippage=slippage,
+                status='active',
+                created_at=datetime.now()
+            )
+            
+            session.add(limit_order)
+            await session.commit()
+            logger.info(f"Created limit sell order: {limit_order.id} for user {user.id}")
+
+            # Send confirmation message
+            await callback_query.message.edit_text(
+                "✅ Лимитный ордер создан!\n\n"
+                f"💰 Количество: {_format_price(amount_tokens)} токенов\n"
+                f"📈 Триггерная цена: {trigger_price}% (${_format_price(target_price)})\n"
+                f"⚙️ Slippage: {slippage}%\n\n"
+                "Ордер будет исполнен автоматически при достижении указанной цены.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+            
+            # Clear state after successful order creation
+            await state.clear()
+            return
+
+        # Regular market sell...
         # Initialize transaction handler with user's private key
         try:
             logger.info("Initializing transaction handler")
@@ -594,6 +647,8 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
         sell_percentage = data.get("sell_percentage", 100)
         slippage = data.get("slippage", 1.0)
         gas_fee = data.get("gas_fee")
+        is_limit = data.get("is_limit", False)
+        trigger_price = data.get("trigger_price")
 
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
@@ -610,13 +665,27 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
         result = await session.execute(stmt)
         last_buy_amount = result.scalar()
 
-        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage, gas_fee)
+        keyboard = get_sell_keyboard_list(
+            slippage=slippage,
+            last_buy_amount=last_buy_amount,
+            sell_percentage=sell_percentage,
+            gas_fee=gas_fee,
+            is_limit=is_limit,
+            trigger_price=trigger_price
+        )
+
+        # Calculate target price if limit order
+        target_price_info = ""
+        if is_limit and trigger_price is not None:
+            current_price = token_info.price_usd
+            target_price = current_price * (1 + (trigger_price / 100))
+            target_price_info = f"\n📈 Триггер цена: ${_format_price(target_price)} ({'+' if trigger_price > 0 else ''}{trigger_price}%)"
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
             f"📍 Адрес токена:\n`{token_address}`\n\n"
             f"💰 Баланс: {_format_price(token_balance)} токенов (${_format_price(token_balance * token_info.price_usd)})\n"
-            f"⚙️ Slippage: {slippage}%\n\n"
+            f"⚙️ Slippage: {slippage}%{target_price_info}\n\n"
             f"📊 Информация о токене:\n"
             f"• Price: ${_format_price(token_info.price_usd)}\n"
             f"• MC: ${_format_price(token_info.market_cap)}\n"
@@ -695,24 +764,27 @@ def get_sell_keyboard_list(
         slippage: float,
         last_buy_amount: float,
         sell_percentage: float | str,
-        gas_fee: float
+        gas_fee: float,
+        is_limit: bool = False,
+        trigger_price: float | None = None
 ):
-    first_row = [[
-        InlineKeyboardButton(text="🔴 Продать", callback_data="market_sell"),
-        InlineKeyboardButton(text="📊 Лимитный", callback_data="limit_sell")
-    ]]
-    last_row = [
-        [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="sell_set_slippage")],
-        [InlineKeyboardButton(text="💰 Продать", callback_data="confirm_sell")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+    first_row = [
+        [
+            InlineKeyboardButton(text="🔴 Маркет" if not is_limit else "⚪️ Маркет", callback_data="market_sell"),
+            InlineKeyboardButton(text="⚪️ Лимитный" if not is_limit else "🔴 Лимитный", callback_data="limit_sell")
+        ]
     ]
 
-    values = [
-        25,
-        50,
-        75,
-        100,
-    ]
+    settings_row = []
+    if is_limit:
+        settings_row.append([
+            InlineKeyboardButton(
+                text=f"📈 Триггер прайс: {trigger_price if trigger_price is not None else 'Не задан'}%",
+                callback_data="trigger_price_sell"
+            )
+        ])
+
+    values = [25, 50, 75, 100]
     buttons = []
     row = []
     chosen = False
@@ -744,7 +816,14 @@ def get_sell_keyboard_list(
     buttons.append([InlineKeyboardButton(
         text=f"🚀 Gas Fee {': ' + _format_price(gas_fee / 1e9) + ' SOL' if gas_fee else ''}",
         callback_data=f"sell_set_gas_fee")])
-    return InlineKeyboardMarkup(inline_keyboard=first_row + buttons + last_row)
+
+    last_row = [
+        [InlineKeyboardButton(text=f"⚙️ Slippage: {slippage}%", callback_data="sell_set_slippage")],
+        [InlineKeyboardButton(text="💰 Создать Ордер" if is_limit else "💰 Продать", callback_data="confirm_sell")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=first_row + settings_row + buttons + last_row)
 
 @router.message(SellStates.waiting_for_gas_fee)
 async def handle_custom_gas_fee(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
@@ -771,5 +850,64 @@ async def handle_custom_gas_fee(callback_query: types.CallbackQuery, state: FSMC
         logger.error(f"[BUY] Invalid gas_fee value: {e}")
         await callback_query.reply(
             "❌ Неверное значение. Введите число от 0 до 10:",
+            reply_markup=ForceReply(selective=True)
+        )
+
+@router.callback_query(lambda c: c.data == "market_sell")
+async def on_market_sell_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Handle market sell button press"""
+    try:
+        await state.update_data(is_limit=False)
+        await show_sell_menu(callback_query.message, state, session)
+    except Exception as e:
+        logger.error(f"Error in market sell handler: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+@router.callback_query(lambda c: c.data == "limit_sell")
+async def on_limit_sell_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Handle limit sell button press"""
+    try:
+        await state.update_data(is_limit=True)
+        data = await state.get_data()
+        if "trigger_price" not in data:
+            await state.update_data(trigger_price=None)
+        await show_sell_menu(callback_query.message, state, session)
+    except Exception as e:
+        logger.error(f"Error in limit sell handler: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+@router.callback_query(lambda c: c.data == "trigger_price_sell")
+async def on_set_trigger_price_button(callback_query: types.CallbackQuery, state: FSMContext):
+    """Handle trigger price setting button press"""
+    try:
+        await callback_query.message.answer(
+            "📈 Введите процент изменения цены для триггера:\n"
+            "Например: 5 (для +5% от текущей цены)\n"
+            "или -5 (для -5% от текущей цены)",
+            reply_markup=ForceReply(selective=True)
+        )
+        await state.set_state(LimitSellStates.set_trigger_price)
+    except Exception as e:
+        logger.error(f"Error in set trigger price handler: {e}")
+        await callback_query.answer("❌ Произошла ошибка")
+
+@router.message(LimitSellStates.set_trigger_price)
+async def handle_trigger_price_input(message: types.Message, state: FSMContext, session: AsyncSession):
+    """Handle trigger price input"""
+    try:
+        # Удаляем все нецифровые символы, кроме минуса и точки
+        cleaned_text = ''.join(c for c in message.text if c.isdigit() or c in '.-')
+        trigger_price = float(cleaned_text)
+        await state.update_data(trigger_price=trigger_price)
+        
+        # Send confirmation message
+        status_message = await message.answer(f"✅ Триггер прайс установлен: {trigger_price}%")
+        
+        # Show updated sell menu
+        await show_sell_menu(status_message, state, session)
+        
+    except ValueError:
+        await message.reply(
+            "❌ Неверное значение. Введите число (например: 5 или -5):",
             reply_markup=ForceReply(selective=True)
         )
