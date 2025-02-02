@@ -87,6 +87,7 @@ class UserTransactionHandler:
                 amount=amount_sol,
                 slippage=slippage / 100  # Convert percentage to decimal
             )
+            logger.info(f"Buy transaction signature: {tx_signature} and given attributes: {mint}, {amount_sol}, {slippage / 100}")
             
             if tx_signature:
                 logger.info(f"Buy transaction successful: {tx_signature}")
