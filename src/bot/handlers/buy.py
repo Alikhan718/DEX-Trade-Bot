@@ -1460,7 +1460,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
 
         # Проверяем достаточно ли средств
-        if balance < auto_buy_settings['amount_sol']:
+        if balance < auto_buy_settings['amount_sol'] and auto_buy_settings['type'] == 'buy':
             await message.reply(
                 f"❌ Недостаточно средств для автопокупки\n"
                 f"Необходимо: {auto_buy_settings['amount_sol']} SOL\n"
@@ -1473,7 +1473,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
 
         # Отправляем сообщение о начале покупки
         status_message = await message.reply(
-            "🔄 Выполняется автоматическая покупка токена...\n"
+            f"🔄 Выполняется автоматическая {'продажа' if auto_buy_settings['type'] == 'sell' else 'покупка'} токена...\n"
             "Пожалуйста, подождите"
         )
 
@@ -1523,7 +1523,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             )
             await status_message.edit_text(
                 f"✅ Токен успешно {'Куплен' if is_buy else 'Продан'}!\n\n"
-                f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'}\n"
+                f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'} {token_info.name if token_info else ''}\n"
                 f"{amount_text}\n"
                 f"⚙️ Slippage: {slippage}%\n"
                 f"💳 Баланс: {_format_price(balance - amount_sol if is_buy else balance)} SOL\n"

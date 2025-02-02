@@ -717,10 +717,8 @@ async def handle_address_input(message: Message, state: FSMContext, session: Asy
 
     if exists:
         await message.reply(
-            "❌ Этот адрес уже отслеживается.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="copy_trade")]
-            ])
+            "❌ Этот адрес уже отслеживается введите другой адрес.",
+            reply_markup=ForceReply(selective=True)
         )
         return
 

@@ -143,7 +143,7 @@ class CopyTradeManager:
                         continue
 
                     # Проверяем настройки копирования продаж
-                    if tx_type == "SELL" and trade.copy_sells:
+                    if tx_type == "SELL" and not trade.copy_sells:
                         logger.info(f"[MANAGER] Sell copying is disabled for trade {trade.id}")
                         await self.send_notification(
                             user.telegram_id,
@@ -160,6 +160,13 @@ class CopyTradeManager:
                         transaction_type=tx_type,
                         status="PENDING"
                     )
+                    start_message = (
+                        f"🔄 Начинаю копировать транзакцию {tx_type}\n\n"
+                        f"🏦 Кошелек лидера: <code>{leader}</code>\n"
+                        f"💎 Токен: <code>{token_address}</code>\n"
+                    )
+                    await self.send_notification(user.telegram_id, start_message)
+
                     session.add(new_transaction)
                     await session.commit()
                     await session.refresh(new_transaction)
@@ -188,6 +195,12 @@ class CopyTradeManager:
                         if tx_type == "SELL":
                             # Для SELL транзакций нам нужно получить баланс токенов пользователя
                             try:
+                                private_key = user.private_key
+                                user_client = SolanaClient(
+                                    compute_unit_price=self.solana_client.compute_unit_price,
+                                    private_key=private_key
+                                )
+                                user_client.load_keypair()
                                 token_balance = await user_client.get_token_balance(Pubkey.from_string(token_address))
                                 logger.info(f"[MANAGER] User token balance: {token_balance}")
 
@@ -297,7 +310,6 @@ class CopyTradeManager:
                             continue
 
                         # Получаем private key пользователя
-                        private_key = user.private_key
                         if not private_key:
                             logger.error(f"[MANAGER] No private key found for user {trade.user_id}")
                             new_transaction.status = "FAILED"
@@ -330,11 +342,6 @@ class CopyTradeManager:
                                 new_transaction.error = f"Invalid private key format: {str(e)}"
                                 await session.commit()
                                 continue
-
-                            user_client = SolanaClient(
-                                compute_unit_price=self.solana_client.compute_unit_price,
-                                private_key=private_key
-                            )
 
                             # Проверяем что ключ успешно загружен
                             try:

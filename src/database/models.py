@@ -184,6 +184,17 @@ class Trade(Base):
     user = relationship("User", backref="trades")
 
 
+class ReferralRecords(Base):
+    __tablename__ = "referral_records"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+    trade_id = Column(Integer, ForeignKey('trades.id'), index=True)
+    amount_sol = Column(Float)  # Amount in SOL for the transaction
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    is_sent = Column(Boolean, default=False)
+
+
 class CopyTrade(Base):
     __tablename__ = "copy_trades"
 
