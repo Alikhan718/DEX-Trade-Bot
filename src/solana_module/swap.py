@@ -6,6 +6,7 @@ from solana.rpc.api import Client
 from solders.rpc.responses import GetTransactionResp
 from solders.transaction_status import UiTransactionTokenBalance
 from solders.pubkey import Pubkey
+from src.solana_module.amm4_solana_client import RaydiumAmmV4
 
 class TokenBalance(NamedTuple):
     amount: Decimal
@@ -75,10 +76,16 @@ def analyze_transaction(tx_data: GetTransactionResp) -> None:
         print(f"Post-balance: {change_data['post_balance']}")
         print(f"Change:       {change_data['change']}")
         change_data['change'] = float(change_data['change'])
-        if change_data['change'] > 0:
-            return 'BUY'
+        if 'So11111111111111111111111111111111111111112' in mint:
+            if change_data['change'] > 0:
+                return 'BUY'
+            else:
+                return 'SELL'
         else:
-            return 'SELL'
+            if change_data['change'] < 0:
+                return 'BUY'
+            else:
+                return 'SELL'
 
 # Example usage
 def swap_type(signature: str) -> str:
