@@ -213,7 +213,7 @@ class RaydiumAmmV4:
         # Load environment (for the SECRET_KEY, etc.)
 
         # Create an async Solana RPC client
-        self.client = AsyncClient("https://api.mainnet-beta.solana.com")
+        self.client = AsyncClient(os.getenv('SOLANA_RPC_URL') + "/?api-key=" + os.getenv('API_KEY_2'))
 
         # Example: read secret key from .env as comma-separated integers
         self.payer_keypair = payer_keypair

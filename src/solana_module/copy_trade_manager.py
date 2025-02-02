@@ -180,7 +180,8 @@ class CopyTradeManager:
                         if leader_token_info:
                             platform_id = leader_token_info['platformId']
                             pool_id = leader_token_info['poolId']
-                            req = requests.get(f"https://api.coinmarketcap.com/kline/v3/k-line/candles/{str(platform_id)}/{str(pool_id)}?type=1m&countBack=1")
+                            req = requests.get(
+                                f"https://api.coinmarketcap.com/kline/v3/k-line/candles/{str(platform_id)}/{str(pool_id)}?type=1m&countBack=1")
                             leader_price_usd = req.json()['data'][-1]['close']
                         tx_info = await self.solana_client.get_transaction(signature_obj)
                         if not tx_info:
@@ -191,7 +192,8 @@ class CopyTradeManager:
                             continue
                         logger.info(f"[MANAGER] Retrieved transaction info")
                         token_info_service = TokenInfoService()
-                        sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
+                        sol_price_usd = await token_info_service.get_token_info(
+                            'So11111111111111111111111111111111111111112')
 
                         if tx_type == "SELL":
                             # Для SELL транзакций нам нужно получить баланс токенов пользователя
@@ -217,7 +219,6 @@ class CopyTradeManager:
                                 logger.info(
                                     f"[MANAGER] Calculated token amount to sell: {token_amount} ({trade.copy_percentage}%)")
 
-
                                 # Проверяем минимальную сумму в SOL после конвертации
                                 token_info = await token_info_service.get_token_info(token_address)
                                 # Get token price before transaction
@@ -237,8 +238,8 @@ class CopyTradeManager:
                                     token_amount = trade.max_amount / token_price_sol
                                     logger.info(
                                         f"[MANAGER] Token amount reduced to {token_amount} to match maximum SOL amount")
-
-                                copy_amount = token_amount  # Для SELL это количество токенов
+                                copy_amount = token_amount * token_price_sol  # Для SELL это количество токенов
+                                logger.info(f"token_amount: {token_amount} / token_price_sol {token_price_sol} = copy_amount: {copy_amount}")
 
                             except Exception as e:
                                 logger.error(f"[MANAGER] Error calculating token amount: {str(e)}")
@@ -382,7 +383,7 @@ class CopyTradeManager:
                         # Проверяем баланс используя клиент пользователя
                         try:
                             balance = await user_client.get_sol_balance(user.solana_wallet)
-                            logger.info(f"[MANAGER] User balance: {balance} SOL")
+                            logger.info(f"[MANAGER] User balance: {balance} SOL, copy_amount: {copy_amount}")
                             if balance < copy_amount:
                                 logger.error(f"[MANAGER] Insufficient balance for user {trade.user_id}")
                                 new_transaction.status = "FAILED"
@@ -433,15 +434,14 @@ class CopyTradeManager:
                                 price_usd = token_info['priceUsd']
                                 # Send success notification
                                 token_price_sol = float(price_usd) / sol_price_usd.price_usd
-
                                 success_message = (
                                     f"✅ Успешно скопирована транзакция {tx_type}\n\n"
                                     f"🏦 Кошелек лидера: <code>{leader}</code>\n\n"
                                     f"💵 Цена токена лидера (На момент покупки): {_format_price(leader_price_usd)} SOL\n"
                                     f"💵 Цена вашего токена (На момент покупки): {_format_price(price_usd)} SOL\n"
                                     f"💎 Токен: <code>{token_address}</code>\n"
-                                    f"💰 Сумма: {_format_price(amount_sol)} SOL\n"
-                                    f"🔢 Количество токенов: {_format_price(amount_sol / token_price_sol)}\n"
+                                    f"💰 Сумма: {_format_price(new_transaction.amount_sol)} SOL\n"
+                                    f"🔢 Количество токенов: {_format_price(new_transaction.amount_sol / token_price_sol)}\n"
                                     f"⏱ Время выполнения: {execution_time:.2f} сек\n"
                                     f"🔗 Транзакция: <a href='https://solscan.io/tx/{copied_signature}'>Solscan</a>"
                                 )
@@ -452,7 +452,7 @@ class CopyTradeManager:
                                     ref_record = ReferralRecords(
                                         user_id=user.referral_id,
                                         trade_id=None,
-                                        amount_sol=amount_sol * 0.005,
+                                        amount_sol=new_transaction.amount_sol * 0.005,
                                         created_at=datetime.now(),
                                         is_sent=False
                                     )
@@ -473,7 +473,7 @@ class CopyTradeManager:
                                     f"❌ Ошибка при копировании транзакции {tx_type}\n\n"
                                     f"🏦 Кошелек лидера: <code>{leader}</code>\n"
                                     f"💎 Токен: <code>{token_address}</code>\n"
-                                    f"💰 Сумма: {copy_amount:.4f} SOL\n"
+                                    f"💰 Сумма: {copy_amount: .4f} SOL\n"
                                     f"❗️ Причина: {error_message}"
                                 )
                                 await self.send_notification(user.telegram_id, failure_message)
@@ -538,7 +538,6 @@ class CopyTradeManager:
             self.monitor.add_leader(wallet)
         self.active_trades[wallet].add(copy_trade)
         self.monitor.add_relationship(wallet, str(copy_trade.id))
-        await self.monitor.start_monitoring()
 
     async def remove_copy_trade(self, copy_trade: CopyTrade):
         """Удалить копитрейд из мониторинга"""
@@ -548,8 +547,6 @@ class CopyTradeManager:
             self.monitor.remove_leader(wallet)
             if not self.active_trades[wallet]:
                 del self.active_trades[wallet]
-        await self.monitor.start_monitoring()
-
 
     async def handle_transaction_with_session(self, leader: str, tx_type: str, signature: str,
                                               token_address: Optional[str]):

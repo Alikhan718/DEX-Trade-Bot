@@ -333,14 +333,6 @@ async def handle_copy_trade_settings_edit_base(
             value *= 1e9
         logger.info(f"Handling attribute: {attribute}")
         if attribute in ('copy_sells', 'is_active', 'anti_mev'):
-            if attribute == 'is_active':
-                service = CopyTradeService()
-                if not getattr(item, attribute):
-                    logger.info(f"Adding copy trade {item}")
-                    await service.add_copy_trade(item)
-                else:
-                    logger.info(f"Removing copy trade {item}")
-                    await service.remove_copy_trade(item)
             setattr(item, attribute, not getattr(item, attribute))
         else:
             setattr(item, attribute, value)
