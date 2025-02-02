@@ -2,6 +2,7 @@ import time
 import traceback
 
 import logging
+from datetime import datetime
 from typing import Dict, Set, Optional
 
 import requests
@@ -13,7 +14,7 @@ from aiogram.exceptions import TelegramAPIError
 from src.services.token_info import TokenInfoService
 from src.bot.handlers.buy import _format_price
 from .solana_monitor import SolanaMonitor
-from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User
+from src.database.models import CopyTrade, ExcludedToken, CopyTradeTransaction, User, ReferralRecords
 from .solana_client import SolanaClient, LAMPORTS_PER_SOL
 from .transaction_handler import UserTransactionHandler
 from solders.pubkey import Pubkey
@@ -143,7 +144,7 @@ class CopyTradeManager:
                         continue
 
                     # Проверяем настройки копирования продаж
-                    if tx_type == "SELL" and trade.copy_sells:
+                    if tx_type == "SELL" and not trade.copy_sells:
                         logger.info(f"[MANAGER] Sell copying is disabled for trade {trade.id}")
                         await self.send_notification(
                             user.telegram_id,
@@ -160,6 +161,13 @@ class CopyTradeManager:
                         transaction_type=tx_type,
                         status="PENDING"
                     )
+                    start_message = (
+                        f"🔄 Начинаю копировать транзакцию {tx_type}\n\n"
+                        f"🏦 Кошелек лидера: <code>{leader}</code>\n"
+                        f"💎 Токен: <code>{token_address}</code>\n"
+                    )
+                    await self.send_notification(user.telegram_id, start_message)
+
                     session.add(new_transaction)
                     await session.commit()
                     await session.refresh(new_transaction)
@@ -188,6 +196,12 @@ class CopyTradeManager:
                         if tx_type == "SELL":
                             # Для SELL транзакций нам нужно получить баланс токенов пользователя
                             try:
+                                private_key = user.private_key
+                                user_client = SolanaClient(
+                                    compute_unit_price=self.solana_client.compute_unit_price,
+                                    private_key=private_key
+                                )
+                                user_client.load_keypair()
                                 token_balance = await user_client.get_token_balance(Pubkey.from_string(token_address))
                                 logger.info(f"[MANAGER] User token balance: {token_balance}")
 
@@ -295,9 +309,12 @@ class CopyTradeManager:
                             new_transaction.error = "User wallet not found"
                             await session.commit()
                             continue
-
-                        # Получаем private key пользователя
                         private_key = user.private_key
+                        user_client = SolanaClient(
+                            compute_unit_price=self.solana_client.compute_unit_price,
+                            private_key=private_key
+                        )
+                        # Получаем private key пользователя
                         if not private_key:
                             logger.error(f"[MANAGER] No private key found for user {trade.user_id}")
                             new_transaction.status = "FAILED"
@@ -330,11 +347,6 @@ class CopyTradeManager:
                                 new_transaction.error = f"Invalid private key format: {str(e)}"
                                 await session.commit()
                                 continue
-
-                            user_client = SolanaClient(
-                                compute_unit_price=self.solana_client.compute_unit_price,
-                                private_key=private_key
-                            )
 
                             # Проверяем что ключ успешно загружен
                             try:
@@ -401,7 +413,7 @@ class CopyTradeManager:
                                 )
                             else:  # SELL
                                 result = await th.sell_token(
-                                    token_address=mint,
+                                    token_address=str(mint),
                                     amount_tokens=copy_amount,  # Здесь copy_amount это количество токенов
                                     sell_percentage=trade.copy_percentage,  # Здесь copy_percentage
                                     slippage=trade.sell_slippage
@@ -434,6 +446,18 @@ class CopyTradeManager:
                                     f"🔗 Транзакция: <a href='https://solscan.io/tx/{copied_signature}'>Solscan</a>"
                                 )
                                 await self.send_notification(user.telegram_id, success_message)
+
+                                if user.referral_id:
+                                    logger.info("User has referral")
+                                    ref_record = ReferralRecords(
+                                        user_id=user.referral_id,
+                                        trade_id=None,
+                                        amount_sol=amount_sol * 0.005,
+                                        created_at=datetime.now(),
+                                        is_sent=False
+                                    )
+                                    session.add(ref_record)
+                                    await session.commit()
                                 await session.commit()
 
                             else:

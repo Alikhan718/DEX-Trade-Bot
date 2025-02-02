@@ -14,14 +14,15 @@ from aiogram.filters import StateFilter
 
 from src.services.solana_service import SolanaService
 from src.services.token_info import TokenInfoService
-from src.database.models import User, LimitOrder, Trade, TransactionType
+from src.database.models import User, LimitOrder, Trade, TransactionType, ReferralRecords
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
 from src.bot.states import BuyStates, AutoBuySettingsStates, LimitBuyStates
 from solders.pubkey import Pubkey
 from src.solana_module.utils import get_bonding_curve_address
 from ..crud import get_user_setting, update_user_setting
-#from bot import bot
+
+# from bot import bot
 
 
 logger = logging.getLogger(__name__)
@@ -89,13 +90,14 @@ def _format_price(amount, format_length=2) -> str:
             # Разделяем строку digits_str на две части
             # Пример: digits_str = "30145939853849426", int_position = 1 => "3.0145939853849426"
             result = (
-                result_sign
-                + digits_str[:int_position]
-                + "."
-                + digits_str[int_position:]
+                    result_sign
+                    + digits_str[:int_position]
+                    + "."
+                    + digits_str[int_position:]
             )
 
         return result
+
     """Форматирует цену в читаемый вид с маленькими цифрами после точки"""
     amount = Decimal(str(amount))
     # Юникод для маленьких цифр
@@ -131,7 +133,6 @@ def _format_price(amount, format_length=2) -> str:
         return to_small_and_normal_digits(amount, format_length)
     else:
         return f"{amount:.{format_length}f}"
-
 
 
 @router.callback_query(F.data == "buy", flags={"priority": 3})
@@ -354,8 +355,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             )
             session.add(limit_order)
             await session.commit()
-    
-            
+
             # Send confirmation message
             await callback_query.message.edit_text(
                 "✅ Лимитный ордер создан!\n\n"
@@ -431,6 +431,16 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
             )
             session.add(trade)
             await session.commit()
+            if user.referral_id:
+                ref_record = ReferralRecords(
+                    user_id=user.referral_id,
+                    trade_id=trade.id or None,
+                    amount_sol=amount_sol * 0.005,
+                    created_at=datetime.now(),
+                    is_sent=False
+                )
+                session.add(ref_record)
+                await session.commit()
         else:
             logger.error("Buy transaction failed")
             # Update error message
@@ -920,9 +930,9 @@ async def on_limit_buy_button(callback_query: types.CallbackQuery, state: FSMCon
 
 
 async def show_limit_buy_menu(
-    message: types.Message,
-    state: FSMContext,
-    edit: bool = False
+        message: types.Message,
+        state: FSMContext,
+        edit: bool = False
 ):
     """
     Отображает меню лимитного ордера (порог цены, сумма SOL, slippage, подтверждение).
@@ -1123,7 +1133,7 @@ async def on_limit_buy_slippage_input(message: types.Message, state: FSMContext)
         logger.error(f"Error on_limit_buy_slippage_input: {e}")
         await message.reply("❌ Произошла ошибка")
         await state.clear()
-    
+
 
 @router.callback_query(lambda c: c.data == "limit_buy_confirm", flags={"priority": 3})
 async def on_limit_buy_confirm(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
@@ -1177,8 +1187,6 @@ async def on_limit_buy_confirm(callback_query: types.CallbackQuery, state: FSMCo
         await state.clear()
 
 
-
-
 @router.callback_query(F.data == "auto_buy_settings", flags={"priority": 3})
 async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuery], session: AsyncSession):
     """Показать настройки автобая"""
@@ -1209,7 +1217,7 @@ async def show_auto_buy_settings(update: Union[types.Message, types.CallbackQuer
             [InlineKeyboardButton(
                 text=f"{'🟢' if settings['type'] == 'buy' else '⚪️'} Покупка",
                 callback_data="toggle_auto_buy_type_buy"
-            ),InlineKeyboardButton(
+            ), InlineKeyboardButton(
                 text=f"{'🟢' if settings['type'] == 'sell' else '⚪️'} Продажа",
                 callback_data="toggle_auto_buy_type_sell"
             )],
@@ -1313,7 +1321,7 @@ async def handle_auto_buy_amount_input(message: types.Message, state: FSMContext
         settings = await get_user_setting(user_id, 'auto_buy', session)
         try:
             amount = float(message.text.strip())
-            if amount <= 0 or (amount >= 100 and settings['type'] == 'sell'):
+            if amount <= 0 or (amount > 100 and settings['type'] == 'sell'):
                 raise ValueError("Amount must be positive")
         except ValueError:
             await message.reply(
@@ -1366,12 +1374,10 @@ async def handle_auto_buy_slippage_choice(callback: types.CallbackQuery, state: 
         choice = callback.data.split("_")[3]  # auto_buy_slippage_X -> X
         print("\n\nCHOICE", choice, "\n\n")
         if choice == "custom":
-            await callback.message.edit_text(
+            await callback.message.answer(
                 "⚙️ Введите значение slippage (в процентах)\n"
                 "Например: 1.5",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="set_auto_buy_slippage")]
-                ])
+                reply_markup=ForceReply(selective=True)
             )
             await state.set_state(AutoBuySettingsStates.ENTER_SLIPPAGE)
             return
@@ -1432,13 +1438,18 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
     try:
         logger.info('Handler: AUTO-BUY start')
         user_id = get_real_user_id(message)
+
         auto_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
-        # Если автобай выключен или настройки не найдены, пропускаем
 
         # Проверяем, является ли сообщение mint адресом
         token_address = message.text.strip()
         if not _is_valid_token_address(token_address):
-            return
+            return await message.reply(
+                f"❌ Не допустимый формат адреса токена, для автоматической {'покупки' if auto_buy_settings['type'] == 'buy' else 'продажи'}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
 
         logger.info(f"Detected mint address: {token_address}")
 
@@ -1451,7 +1462,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         if not user:
             logger.warning(f"User not found for auto-buy: {user_id}")
             return
-        
+
         if not (await get_user_setting(user_id, 'auto_buy', session))['enabled']:
             logger.warning(f"User not enabled: {user_id}")
             return
@@ -1460,7 +1471,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         balance = await solana_service.get_wallet_balance(user.solana_wallet)
 
         # Проверяем достаточно ли средств
-        if balance < auto_buy_settings['amount_sol']:
+        if balance < auto_buy_settings['amount_sol'] and auto_buy_settings['type'] == 'buy':
             await message.reply(
                 f"❌ Недостаточно средств для автопокупки\n"
                 f"Необходимо: {auto_buy_settings['amount_sol']} SOL\n"
@@ -1473,7 +1484,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
 
         # Отправляем сообщение о начале покупки
         status_message = await message.reply(
-            "🔄 Выполняется автоматическая покупка токена...\n"
+            f"🔄 Выполняется автоматическая {'продажа' if auto_buy_settings['type'] == 'sell' else 'покупка'} токена...\n"
             "Пожалуйста, подождите"
         )
 
@@ -1493,12 +1504,33 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             )
             return
 
-        # Выполняем покупку с предустановленными параметрами
-        amount_sol = auto_buy_settings['amount_sol']
+        token_info = await token_info_service.get_token_info(token_address)
+        if not token_info:
+            token_info = await token_info_service.get_token_info(token_address)
+
+        sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
+        token_price_sol = token_info.price_usd / sol_price_usd.price_usd
         slippage = auto_buy_settings['slippage']
 
-        # Получаем информацию о токене перед покупкой
-        token_info = await token_info_service.get_token_info(token_address)
+        amount_sol = auto_buy_settings['amount_sol']  # will be changed
+
+        sell_percentage = 100  # initial value in sell case
+
+        if auto_buy_settings['type'] == 'buy':
+            token_amount = float(amount_sol) / float(token_price_sol)
+        else:
+            token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(str(token_address)))
+            sell_percentage = amount_sol  # we store it as amount_sol in sell case it's actually percentage
+            token_amount = (token_balance / sell_percentage * 100)
+            amount_sol = token_amount * token_price_sol  # amount sol = token amount / token price per sol
+            if not token_balance or token_balance == 0 or token_amount > token_balance:
+                return await status_message.edit_text(
+                    "❌ Ошибка: Не достаточно средств на балансе для продажи",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                    ])
+                )
+
         if auto_buy_settings['type'] == 'buy':
             tx_signature = await tx_handler.buy_token(
                 token_address=token_address,
@@ -1508,7 +1540,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         else:
             tx_signature = await tx_handler.sell_token(
                 token_address=token_address,
-                sell_percentage=amount_sol,
+                sell_percentage=sell_percentage,
                 slippage=slippage
             )
 
@@ -1519,11 +1551,36 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             amount_text = (
                 f"💰 Потрачено: {_format_price(amount_sol)} SOL"
                 if is_buy else
-                f"💰 Продано: {_format_price(amount_sol)}% токенов"
+                f"💰 Продано: {_format_price(token_amount)} токенов"
             )
+            trade = Trade(
+                user_id=user.id,
+                token_address=token_address,
+                amount=token_amount,
+                price_usd=token_info.price_usd if token_info and token_info.price_usd else -1.0,
+                amount_sol=amount_sol,
+                created_at=datetime.now(),
+                transaction_type=(0 if is_buy else 1),
+                status="SUCCESS",
+                gas_fee=settings['gas_fee'],
+                transaction_hash=str(tx_signature),
+            )
+            session.add(trade)
+            await session.commit()
+            if user.referral_id:
+                logger.info("User has referral")
+                ref_record = ReferralRecords(
+                    user_id=user.referral_id,
+                    trade_id=trade.id or None,
+                    amount_sol=amount_sol * 0.005,
+                    created_at=datetime.now(),
+                    is_sent=False
+                )
+                session.add(ref_record)
+                await session.commit()
             await status_message.edit_text(
                 f"✅ Токен успешно {'Куплен' if is_buy else 'Продан'}!\n\n"
-                f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'}\n"
+                f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'} {token_info.name if token_info else ''}\n"
                 f"{amount_text}\n"
                 f"⚙️ Slippage: {slippage}%\n"
                 f"💳 Баланс: {_format_price(balance - amount_sol if is_buy else balance)} SOL\n"
@@ -1677,5 +1734,3 @@ async def cancel_limit_order(callback_query: types.CallbackQuery, session: Async
     except Exception as e:
         logger.error(f"Error cancelling limit order: {e}")
         await callback_query.answer("❌ Произошла ошибка при отмене ордера")
-
-    

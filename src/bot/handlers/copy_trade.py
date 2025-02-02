@@ -221,6 +221,7 @@ async def handle_edit_setting(callback: CallbackQuery, state: FSMContext, sessio
         if not copy_trade:
             await callback.answer("Копитрейд не найден", show_alert=True)
             return
+
         setattr(copy_trade, setting, not getattr(copy_trade, setting))
         await session.commit()
         return await show_copy_settings(callback, session, copy_trade_id)
@@ -717,10 +718,8 @@ async def handle_address_input(message: Message, state: FSMContext, session: Asy
 
     if exists:
         await message.reply(
-            "❌ Этот адрес уже отслеживается.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="copy_trade")]
-            ])
+            "❌ Этот адрес уже отслеживается введите другой адрес.",
+            reply_markup=ForceReply(selective=True)
         )
         return
 

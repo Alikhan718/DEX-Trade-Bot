@@ -139,13 +139,13 @@ class UserTransactionHandler:
                 associated_token_account = await self.client.create_associated_token_account(mint)
                 # Get token balance
                 resp = await self.client.client.get_token_account_balance(associated_token_account)
-                token_balance = int(resp.value.amount)
+                token_balance = float(resp.value.amount)
                 # Calculate amount to sell
                 amount_tokens = (token_balance * sell_percentage) / 100
             
             if amount_tokens is None:
                 raise ValueError("Must specify either amount_tokens or sell_percentage")
-            
+
             # Execute sell transaction using SolanaClient
             return await self.client.sell_token(
                 mint=mint,
