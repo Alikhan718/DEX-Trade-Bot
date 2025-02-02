@@ -40,6 +40,7 @@ import httpx  # Используется в обработке исключен�
 # COMPUTE_UNIT_PRICE  # todo change to select from bd
 
 from typing import Optional, Dict, Union
+from src.solana_module.sdk.jito_jsonrpc_sdk import JitoJsonRpcSDK
 
 # Configure Logging
 logging.basicConfig(
@@ -153,7 +154,7 @@ class SolanaClient:
         self.client = AsyncClient(self.rpc_endpoint)
         self._private_key = private_key
         self.payer = None  # Will be set on first use
-
+        self.sdk = JitoJsonRpcSDK(url="https://mainnet.block-engine.jito.wtf/api/v1")
         # Program addresses
         self.PUMP_PROGRAM = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
         self.PUMP_GLOBAL = Pubkey.from_string("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
@@ -261,7 +262,7 @@ class SolanaClient:
         stop=stop_after_attempt(5),
         reraise=True
     )
-    async def send_buy_transaction(self, params: dict, retries: int = 3):
+    async def send_buy_transaction(self, params: dict, retries: int = 3, antimev: bool = False) -> str:
         """
         Отправляет транзакцию покупки токенов.
         """
@@ -290,6 +291,14 @@ class SolanaClient:
                     lamports=lamports
                 )
             )
+        if antimev:
+            jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+            logger.info(f"Using antimev tip account: {jito_tip_account}")
+            jito_tip_ix = transfer(TransferParams(
+                    from_pubkey=self.payer.pubkey(),
+                    to_pubkey=jito_tip_account,
+                    lamports=100000
+                ))
 
         for attempt in range(retries):
             try:
@@ -304,6 +313,8 @@ class SolanaClient:
                 compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
 
                 tx_buy = Transaction().add(buy_ix).add(compute_budget_ix).add(transfer_ix)
+                if antimev:
+                    tx_buy.add(jito_tip_ix)
                 tx_buy.recent_blockhash = (
                     await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
                 tx_buy.fee_payer = self.payer.pubkey()
@@ -377,7 +388,7 @@ class SolanaClient:
         raise Exception(f"Transaction confirmation timeout after {max_retries} attempts")
 
     async def buy_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, amount: float,
-                        slippage: float = 0.25):
+                        slippage: float = 0.25, antimev: bool = False) -> Optional[str]:
         """Executes token purchase."""
         try:
             associated_token_account = await self.create_associated_token_account(mint)
@@ -408,9 +419,11 @@ class SolanaClient:
             'token_amount': token_amount,
             'max_amount_lamports': max_amount_lamports
         }
+        
+        print(f"{params}")
 
         try:
-            signature = await self.send_buy_transaction(params)
+            signature = await self.send_buy_transaction(params, antimev=antimev)
             return signature  # Return the transaction signature
         except RetryError as re:
             logger.error(f"Failed to execute Buy transaction after retries: {re}")
@@ -486,7 +499,7 @@ class SolanaClient:
         stop=stop_after_attempt(5),
         reraise=True
     )
-    async def send_sell_transaction(self, params: dict, retries: int = 3):
+    async def send_sell_transaction(self, params: dict, retries: int = 3, antimev: bool = False) -> str:
         """Sends sell transaction."""
         accounts = [
             AccountMeta(pubkey=self.PUMP_GLOBAL, is_signer=False, is_writable=False),
@@ -520,6 +533,15 @@ class SolanaClient:
                     lamports=lamports
                 )
             )
+        
+        if antimev:
+            jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+            logger.info(f"Using antimev tip account: {jito_tip_account}")
+            jito_tip_ix = transfer(TransferParams(
+                    from_pubkey=self.payer.pubkey(),
+                    to_pubkey=jito_tip_account,
+                    lamports=100000
+                ))
 
         # Convert token amount to integer with decimals
         
@@ -542,6 +564,8 @@ class SolanaClient:
                 recent_blockhash = await self.client.get_latest_blockhash()
                 transaction = Transaction()
                 transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price))).add(transfer_ix)
+                if antimev:
+                    transaction.add(jito_tip_ix)
                 transaction.recent_blockhash = recent_blockhash.value.blockhash
                 transaction.fee_payer = self.payer.pubkey()
                 transaction.sign(self.payer)
@@ -574,7 +598,7 @@ class SolanaClient:
         raise Exception("Failed to send transaction after all attempts")
 
     async def sell_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey,
-                         token_amount: float, min_amount: float = 0.25):
+                         token_amount: float, min_amount: float = 0.25, antimev: bool = False) -> str:
         """Executes token sale."""
         try:
             associated_token_account = await self.create_associated_token_account(mint)
@@ -594,7 +618,7 @@ class SolanaClient:
         }
 
         try:
-            return await self.send_sell_transaction(params)
+            return await self.send_sell_transaction(params, antimev=antimev)
         except RetryError as re:
             logger.error(f"Failed to execute Sell transaction after retries: {re}")
         except Exception as e:

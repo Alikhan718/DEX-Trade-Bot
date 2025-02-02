@@ -36,6 +36,8 @@ from spl.token.instructions import (
     close_account,
 )
 
+from src.solana_module.sdk.jito_jsonrpc_sdk import JitoJsonRpcSDK
+
 # Local imports from your code (replace with your actual paths as needed)
 # e.g. from src.solana_module.raydium.constants import ...
 from src.solana_module.raydium.constants import (
@@ -219,6 +221,7 @@ class RaydiumAmmV4:
         # Example compute budget
         self.UNIT_BUDGET = 1_400_000
         self.UNIT_PRICE = 200_000
+        self.sdk = JitoJsonRpcSDK(url="https://mainnet.block-engine.jito.wtf/api/v1")
 
         # Hard-coded addresses for Raydium
         self.ray_authority_v4 = Pubkey.from_string("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
@@ -486,7 +489,7 @@ class RaydiumAmmV4:
         print("Transaction not confirmed within the retry limit.")
         return False
 
-    async def buy(self, pair_address: str, sol_in: float = 0.01, slippage: int = 5) -> bool:
+    async def buy(self, pair_address: str, sol_in: float = 0.01, slippage: int = 5, antimev=False) -> bool:
         """
         Buys the 'other' token side from the pool using SOL as input (wrapped as WSOL).
         If base_mint == WSOL, we interpret that we are actually buying the quote_mint, otherwise base_mint.
@@ -629,6 +632,16 @@ class RaydiumAmmV4:
                 create_wsol_account_instruction,
                 init_wsol_account_instruction,
             ]
+            
+            if antimev:
+                jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+                print(f"Using antimev tip account: {jito_tip_account}")
+                jito_tip_ix = transfer(TransferParams(
+                        from_pubkey=self.payer.pubkey(),
+                        to_pubkey=jito_tip_account,
+                        lamports=100000
+                    ))
+                instructions.append(jito_tip_ix)
 
             if create_token_account_instruction:
                 instructions.append(create_token_account_instruction)
@@ -666,7 +679,7 @@ class RaydiumAmmV4:
             print("Error occurred during 'buy' transaction:", e)
             return False
 
-    async def sell(self, pair_address: str, percentage: int = 100, slippage: int = 5) -> bool:
+    async def sell(self, pair_address: str, percentage: int = 100, slippage: int = 5, antimev=False) -> bool:
         """
         Sells the base token (if base != WSOL) or the quote token (if base == WSOL) for SOL.
         Wraps the SOL (WSOL) to do the actual swap, then closes the wrapped account.
@@ -762,6 +775,7 @@ class RaydiumAmmV4:
                 accounts=pool_keys,
                 owner=self.payer_keypair.pubkey(),
             )
+            
 
             close_wsol_account_instruction = close_account(
                 CloseAccountParams(
@@ -791,6 +805,16 @@ class RaydiumAmmV4:
                 transfer_ix,
                 close_wsol_account_instruction,
             ]
+            
+            if antimev:
+                jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+                print(f"Using antimev tip account: {jito_tip_account}")
+                jito_tip_ix = transfer(TransferParams(
+                        from_pubkey=self.payer.pubkey(),
+                        to_pubkey=jito_tip_account,
+                        lamports=100000
+                    ))
+                instructions.append(jito_tip_ix)
 
             # Optionally close the token account if selling 100%
             if percentage == 100:
@@ -830,7 +854,7 @@ class RaydiumAmmV4:
             print("Error occurred during 'sell' transaction:", e)
             return False
 
-    async def buy_exec(self, mint: str, sol_in: float, slippage: int = 5) -> bool:
+    async def buy_exec(self, mint: str, sol_in: float, slippage: int = 5, antimev=False) -> bool:
         """
         Wrapper that:
          1) Gets a valid AMM pool address by the given mint
@@ -852,7 +876,7 @@ class RaydiumAmmV4:
             print("Base Mint:", pool_keys.base_mint)
             print("Quote Mint:", pool_keys.quote_mint)
 
-            res = await self.buy(pair_address=pair_address, sol_in=sol_in, slippage=slippage)
+            res = await self.buy(pair_address=pair_address, sol_in=sol_in, slippage=slippage, antimev=antimev)
             if res:
                 print("Транзакция на покупку прошла успешно!")
                 return res
@@ -864,7 +888,7 @@ class RaydiumAmmV4:
             print("Error occurred during 'buy_exec' transaction:", e)
             return False
 
-    async def sell_exec(self, mint: str, percentage: int, slippage: int = 5) -> bool:
+    async def sell_exec(self, mint: str, percentage: int, slippage: int = 5, antimev=False) -> bool:
         """
         Wrapper that:
          1) Gets a valid AMM pool address by the given mint
@@ -886,7 +910,7 @@ class RaydiumAmmV4:
             print("Base Mint:", pool_keys.base_mint)
             print("Quote Mint:", pool_keys.quote_mint)
 
-            res = await self.sell(pair_address=pair_address, percentage=percentage, slippage=slippage)
+            res = await self.sell(pair_address=pair_address, percentage=percentage, slippage=slippage, antimev=antimev)
             if res:
                 print("Транзакция на продажу прошла успешно!")
                 return res
