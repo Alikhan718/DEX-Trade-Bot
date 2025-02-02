@@ -49,7 +49,7 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
         user = result.unique().scalar_one_or_none()
 
         if not user:
-            await callback_query.answer("❌ Пользователь не найден")
+            await callback_query.answer("❌ Пользователь не найден 1")
             return
 
         # Create SolanaClient instance
@@ -128,7 +128,8 @@ async def handle_token_selection(callback_query: types.CallbackQuery, state: FSM
             'operation_context': 'sell',  # Set operation context to sell
             'sell_percentage': 100,  # Default to 100%
             'slippage': slippage,  # Default slippage
-            'gas_fee': gas_fee
+            'gas_fee': gas_fee,
+            'user_id': user.id
         })
 
         # Show sell menu for selected token
@@ -174,7 +175,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         user = sell_setting.unique().scalar_one_or_none()
 
         if not user:
-            await message.reply("❌ Пользователь не найден")
+            await message.reply("❌ Пользователь не найден 2")
             return
 
         try:
@@ -229,12 +230,11 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             return
 
         # Формируем клавиатуру
-        user_id = get_real_user_id(message)
-        stmt = select(User.last_buy_amount).where(User.telegram_id == user_id)
-        sell_setting = await session.execute(stmt)
-        last_buy_amount = sell_setting.scalar()
+        stmt = select(Trade).where(Trade.user_id == user.id).order_by(Trade.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        last_trade = res.scalar_one_or_none()
 
-        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, sell_percentage, gas_fee)
+        keyboard = get_sell_keyboard_list(slippage, last_trade.amount_sol if last_trade else None, sell_percentage, gas_fee)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -280,7 +280,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
 
         if not user:
             logger.error(f"User not found: {user_id}")
-            await callback_query.answer("❌ Пользователь не найден")
+            await callback_query.answer("❌ Пользователь не найден 3")
             return
 
         # Get state data
@@ -361,20 +361,23 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         # Send status message
         status_message = await callback_query.message.answer(
             "🔄 Выполняется продажа токена...\n"
-            "Пожалуйста, подождите"
+            "Пожалуйста, подождиfте"
         )
 
         # Get current token price
         token_info = await token_info_service.get_token_info(token_address)
         sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
         # Get token price before transaction
-        current_price_sol = token_info.price_usd / sol_price_usd.price_usd
+        current_price_sol = float(token_info.price_usd) / float(sol_price_usd.price_usd)
 
         # Calculate amount of tokens to sell based on percentage or initial amount
         if sell_percentage == "initial":
             # Find the most recent buy transaction for this token
 
-            if True:
+            stmt = select(Trade).where(Trade.user_id == user.id).order_by(Trade.id.desc()).limit(1)
+            res = await session.execute(stmt)
+            last_trade = res.scalar_one_or_none()
+            if not last_trade:
                 logger.warning("No previous buy transaction found for Initial sell")
                 await status_message.edit_text(
                     "❌ Не найдена предыдущая транзакция покупки\n"
@@ -386,13 +389,13 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                 return
 
             # Calculate how many tokens we need to sell to get the same amount of SOL
-            # amount_tokens = (buy_tx.amount_sol / current_price_sol)
-            #
-            # # Check if we have enough tokens
-            # if amount_tokens > token_balance:
-            #     amount_tokens = token_balance  # Sell all available tokens if not enough
+            amount_tokens = (float(last_trade.amount_sol) / float(current_price_sol))
 
-            logger.info(f"Initial sell: Selling {amount_tokens} tokens to get {buy_tx.amount_sol} SOL")
+            # Check if we have enough tokens
+            if amount_tokens > token_balance:
+                amount_tokens = token_balance  # Sell all available tokens if not enough
+
+            logger.info(f"Initial sell: Selling {amount_tokens} tokens to get {last_trade.amount_sol} SOL")
         else:
             amount_tokens = token_balance * (sell_percentage / 100.0)
 
@@ -598,6 +601,7 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
         token_address = data.get("token_address")
         slippage = data.get("slippage")
         gas_fee = data.get('gas_fee')
+        db_user_id = data.get('user_id')
 
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
@@ -605,11 +609,10 @@ async def handle_sell_percentage(callback_query: types.CallbackQuery, state: FSM
             await callback_query.answer("❌ Не удалось получить информацию о токене")
             return
 
-        user_id = get_real_user_id(callback_query)
-        stmt = select(User.last_buy_amount).where(User.telegram_id == user_id)
-        result = await session.execute(stmt)
-        last_buy_amount = result.scalar()
-        keyboard = get_sell_keyboard_list(slippage, last_buy_amount, percentage, gas_fee)
+        stmt = select(Trade).where(Trade.user_id == db_user_id).order_by(Trade.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        last_trade = res.unique().scalar_one_or_none()
+        keyboard = get_sell_keyboard_list(slippage, last_trade.amount_sol if last_trade else None, percentage, gas_fee)
 
         message_text = (
             f"${token_info.symbol} 📈 - {token_info.name}\n\n"
@@ -649,7 +652,7 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
         gas_fee = data.get("gas_fee")
         is_limit = data.get("is_limit", False)
         trigger_price = data.get("trigger_price")
-
+        db_user_id = data.get('user_id')
         # Get token info
         token_info = await token_info_service.get_token_info(token_address)
         if not token_info:
@@ -660,14 +663,14 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
                 ])
             )
             return
-        user_id = get_real_user_id(message)
-        stmt = select(User.last_buy_amount).where(User.telegram_id == user_id)
-        result = await session.execute(stmt)
-        last_buy_amount = result.scalar()
+
+        stmt = select(Trade).where(Trade.user_id == db_user_id).order_by(Trade.id.desc()).limit(1)
+        res = await session.execute(stmt)
+        last_trade = res.scalar_one_or_none()
 
         keyboard = get_sell_keyboard_list(
             slippage=slippage,
-            last_buy_amount=last_buy_amount,
+            last_buy_amount=last_trade.amount_sol if last_trade else None,
             sell_percentage=sell_percentage,
             gas_fee=gas_fee,
             is_limit=is_limit,

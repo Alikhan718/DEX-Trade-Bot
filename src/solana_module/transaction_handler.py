@@ -138,7 +138,7 @@ class UserTransactionHandler:
             associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
             
             # Get token balance if selling percentage
-            if sell_percentage is not None:
+            if sell_percentage is not None and sell_percentage != 'initial':
                 # Get associated token account
                 associated_token_account = await self.client.create_associated_token_account(mint)
                 # Get token balance

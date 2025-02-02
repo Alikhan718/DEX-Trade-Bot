@@ -2,16 +2,18 @@ import os
 import traceback
 from typing import Union
 
-from aiogram import Router, types, F
+from aiogram import Router, types, F, Bot
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, Message
+from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from src.bot.handlers.buy import _format_price
+from src.bot.handlers.withdraw import shorten_address
 from src.bot.states import WithdrawStates
 from src.bot.utils import get_real_user_id
 from src.database import User, ReferralRecords
@@ -184,72 +186,87 @@ async def copy_referral_link(callback_query: types.CallbackQuery, session: Async
 
 
 @router.callback_query(F.data == "claim_referral_bonus", flags={"priority": 3})
-async def claim_referral_bonus(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+async def claim_referral_bonus(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession,
+                               solana_service: SolanaService, bot: Bot):
     """Запросить адрес для вывода"""
-    logger.info("[REFERRAL] Starting address input process")
-
-    # Сохраняем текущие данные
-    current_data = await state.get_data()
-    withdraw_amount = current_data.get("withdraw_amount")
-    logger.info(f"[REFERRAL] Preserved withdraw amount: {withdraw_amount}")
-
-    # Очищаем состояние и сохраняем данные обратно
-
-    await state.update_data(withdraw_amount=withdraw_amount)
-    logger.info("[REFERRAL] Previous state cleared, amount restored")
-
-    # Устанавливаем новое состояние
-    await state.set_state(WithdrawStates.waiting_for_address)
-    current_state = await state.get_state()
-    logger.info(f"[REFERRAL] State set to: {current_state}")
-
-    await callback_query.message.answer(
-        "📍 ЗДЕСЬ МОГЛА БЫ БЫТЬ ВАША РЕКЛАМА Введите адрес кошелька для вывода:",
-        reply_markup=ForceReply(selective=True)
-    )
-    logger.info("[REFERRAL] Sent address input request with ForceReply")
-
-
-@router.message(StateFilter(WithdrawStates.waiting_for_address), flags={"priority": 20})
-async def handle_withdraw_address(message: Message, state: FSMContext, session: AsyncSession,
-                                  solana_service: SolanaService):
-    """Обработать введенный адрес"""
-    logger.info(f"[WITHDRAW] Received address message: {message.text}")
+    logger.info("[REFERRAL] Starting cash out process")
     try:
-        address = message.text.strip()
-        # Проверяем валидность адреса
-        try:
-            Pubkey.from_string(address)
-        except ValueError:
-            await message.answer(
-                "❌ Некорректный адрес кошелька",
-                reply_markup=ForceReply(selective=True)
-            )
-            return
-
-        # Сохраняем адрес
-        await state.update_data(withdraw_address=address)
-
-        # Показываем меню вывода с обновленной информацией
-        user_id = get_real_user_id(message)
+        # Получаем сохраненные данные
+        user_id = get_real_user_id(callback_query)
         stmt = select(User).where(User.telegram_id == user_id)
         result = await session.execute(stmt)
         user = result.unique().scalar_one_or_none()
 
-        balance = await solana_service.get_wallet_balance(user.solana_wallet)
-        data = await state.get_data()
-        amount = data.get("withdraw_amount", "Не указана")
+        query = select(ReferralRecords).where(ReferralRecords.user_id == user.id)
+        result = await session.execute(query)
+        referral_records = result.unique().scalars().all()
+        amount = 0
+        for rec in referral_records:
+            if rec.is_sent == False:
+                amount += float(rec.amount_sol or 0)
 
-        await message.answer(
-            f"💰 Выполняется вывод бонусов\n"
-            f"💰 Сумма для вывода: {_format_price(amount) if isinstance(amount, (int, float)) else amount}\n"
-            f"📍 Адрес получателя: {address}",
-            reply_markup=withdraw_menu_keyboard
+        user_balance = await solana_service.get_wallet_balance(user.solana_wallet)
+
+        key = os.getenv('SECRET_KEY').strip()
+        key_parts = key.split(',')
+        private_key_bytes = bytes([int(i) for i in key_parts])
+        bonus_wallet_keypair = Keypair.from_bytes(private_key_bytes)
+        public_key = str(bonus_wallet_keypair.pubkey())
+        bonus_wallet_balance = await solana_service.get_wallet_balance(public_key)
+
+        if amount < 0.01:
+            await callback_query.answer("❌ Недостаточно накопленных бонусов, минимальный вывод 0.01 SOL")
+            return
+        if amount >= bonus_wallet_balance:
+            await callback_query.answer("❌ Сервис вывода бонусов временно недоступен, попробуйте позже")
+            # 🛑 Отправляем сообщение админу о необходимости пополнить баланс
+            admin_message = (
+                f"⚠️ Недостаточно средств на бонусном кошельке!\n"
+                f"💰 Баланс: {_format_price(bonus_wallet_balance)} SOL\n"
+                f"🔺 Требуемая сумма: {_format_price(amount)} SOL\n"
+                f"🚀 Срочно пополните кошелек: {shorten_address(public_key)}"
+            )
+            return await bot.send_message(304280297, admin_message)
+
+        # Отправляем уведомление о начале транзакции
+        await callback_query.message.edit_text(
+            f"⏳ Выполняется вывод {_format_price(amount)} SOL на адрес {shorten_address(user.solana_wallet)}",
         )
 
+        # Создаем клиент и выполняем транзакцию
+        client = solana_service.create_client(str(key))
+
+        signature = await client.send_transfer_transaction(
+            recipient_address=user.solana_wallet,
+            amount_sol=amount,
+            is_token_transfer=False,  # Это перевод SOL, а не токенов
+        )
+
+        if signature:
+            # Транзакция успешна
+            await session.execute(
+                update(ReferralRecords)
+                .where(ReferralRecords.user_id == user.id)
+                .values(is_sent=True)
+            )
+            await session.commit()
+            await callback_query.message.answer(
+                f"✅ Бонусы успешно переведены на ваш кошелек: {_format_price(amount)} SOL\n"
+                f"🔗 Транзакция: [Solscan](https://solscan.io/tx/{signature})",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
+        else:
+            raise Exception("Transaction failed")
+
     except Exception as e:
-        logger.error(f"Error handling withdraw address: {e}")
-        await message.answer(
-            "❌ Произошла ошибка при обработке адреса",
-            reply_markup=withdraw_menu_keyboard
+        traceback.print_exc()
+        logger.error(f"Error confirming withdrawal: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при выводе средств",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="referral_menu")]
+            ])
         )
