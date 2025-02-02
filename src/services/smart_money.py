@@ -148,7 +148,7 @@ class SmartMoneyTracker:
         accounts = []
         try:
             largest_accounts = (await self.client.get_token_largest_accounts(target_mint)).value
-            ti = float(token_info(target_mint)['priceUsd'])
+            ti = float(token_info(str(target_mint))['priceUsd'])
             for account in largest_accounts:
                 info = await self.account_info(account.address, target_mint, days_ago=days_ago)
                 if info:
