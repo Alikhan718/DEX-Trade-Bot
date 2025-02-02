@@ -123,6 +123,10 @@ class UserTransactionHandler:
             Transaction signature if successful, None otherwise
         """
         try:
+            logger.info("[HANDLER] Starting sell transaction for token %s", token_address)
+            logger.info("[HANDLER] Parameters: amount=%s, percentage=%s, slippage=%s", 
+                amount_tokens, sell_percentage, slippage)
+
             # Convert token address to Pubkey
             radium = RaydiumAmmV4(self.client.payer)
             mint = Pubkey.from_string(token_address)

@@ -109,7 +109,7 @@ class SolanaDEXBot:
         try:
             # Initialize limit orders service
             logger.info("Starting limit orders monitoring...")
-            self.limit_orders_service = AsyncLimitOrders(self.Session, self)
+            self.limit_orders_service = AsyncLimitOrders(self.Session, self.bot)
             await self.limit_orders_service.start()
             
             # Start monitoring in background
