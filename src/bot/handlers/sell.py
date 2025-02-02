@@ -319,7 +319,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                 user_id=user.id,
                 token_address=token_address,
                 order_type='sell',
-                amount_tokens=amount_tokens,
+                amount_tokens=sell_percentage,
                 trigger_price_usd=target_price,
                 trigger_price_percent=trigger_price,
                 slippage=slippage,
