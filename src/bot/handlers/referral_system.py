@@ -3,11 +3,19 @@ import traceback
 from typing import Union
 
 from aiogram import Router, types, F
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, Message
+from solders.pubkey import Pubkey
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
-from src.database import User
+
+from src.bot.handlers.buy import _format_price
+from src.bot.states import WithdrawStates
+from src.bot.utils import get_real_user_id
+from src.database import User, ReferralRecords
+from src.services import SolanaService
 
 router = Router()
 
@@ -52,16 +60,32 @@ async def show_referral_menu(update: Union[types.Message, types.CallbackQuery], 
         query = select(func.count(User.id)).where(User.referral_id == user.id)
         result = await session.execute(query)
         referral_count = result.scalar()
+        query = select(ReferralRecords).where(ReferralRecords.user_id == user.id)
+        result = await session.execute(query)
+        referral_records = result.unique().scalars().all()
+        referral_available_sol = 0
+        referral_cashed_out_sol = 0
+        for rec in referral_records:
+            if rec.is_sent == False:
+                referral_available_sol += float(rec.amount_sol or 0)
+            else:
+                referral_cashed_out_sol += float(rec.amount_sol or 0)
+
         menu_text = (
             "👥 Реферальная Система\n\n"
             "Делитесь ссылкой с другими пользователями чтобы зарабатывать на комиссии с их транзакций! \n\nЗа каждого приведенного реферала вы будете получать 0.5% от суммы транзакции\n\n"
-            f"Количество рефералов: {referral_count}"
+            f"Количество рефералов: <b>{referral_count}</b>\n\n"
+            f"⚠️<b><i>Бонусы можно вывести от 0.01 SOL</i></b>⚠️\n\n"
+            f"Бонусы с рефералов: {_format_price(referral_available_sol)} SOL\n"
+            f"Уже выведено: {_format_price(referral_cashed_out_sol)} SOL"
         )
         buy_settings_keyboard = []
 
         referral_keyboard = [
             InlineKeyboardButton(text=f"🚀 Скопировать ссылку реферала",
                                  callback_data="copy_referral_link"),
+            InlineKeyboardButton(text=f"💸 Вывести бонусы",
+                                 callback_data="claim_referral_bonus"),
         ]
 
         # Создаем список кнопок, распределяя их по строкам
@@ -91,9 +115,9 @@ async def show_referral_menu(update: Union[types.Message, types.CallbackQuery], 
 
         # Отправляем или редактируем сообщение в зависимости от типа объекта
         if isinstance(update, types.Message):
-            await message.answer(menu_text, reply_markup=keyboard)
+            await message.answer(menu_text, reply_markup=keyboard, parse_mode='HTML')
         else:  # CallbackQuery
-            await message.edit_text(menu_text, reply_markup=keyboard)
+            await message.edit_text(menu_text, reply_markup=keyboard, parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"Error showing settings menu: {e}")
@@ -156,4 +180,76 @@ async def copy_referral_link(callback_query: types.CallbackQuery, session: Async
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="referral_menu")]
             ])
+        )
+
+
+@router.callback_query(F.data == "claim_referral_bonus", flags={"priority": 3})
+async def claim_referral_bonus(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Запросить адрес для вывода"""
+    logger.info("[REFERRAL] Starting address input process")
+
+    # Сохраняем текущие данные
+    current_data = await state.get_data()
+    withdraw_amount = current_data.get("withdraw_amount")
+    logger.info(f"[REFERRAL] Preserved withdraw amount: {withdraw_amount}")
+
+    # Очищаем состояние и сохраняем данные обратно
+
+    await state.update_data(withdraw_amount=withdraw_amount)
+    logger.info("[REFERRAL] Previous state cleared, amount restored")
+
+    # Устанавливаем новое состояние
+    await state.set_state(WithdrawStates.waiting_for_address)
+    current_state = await state.get_state()
+    logger.info(f"[REFERRAL] State set to: {current_state}")
+
+    await callback_query.message.answer(
+        "📍 ЗДЕСЬ МОГЛА БЫ БЫТЬ ВАША РЕКЛАМА Введите адрес кошелька для вывода:",
+        reply_markup=ForceReply(selective=True)
+    )
+    logger.info("[REFERRAL] Sent address input request with ForceReply")
+
+
+@router.message(StateFilter(WithdrawStates.waiting_for_address), flags={"priority": 20})
+async def handle_withdraw_address(message: Message, state: FSMContext, session: AsyncSession,
+                                  solana_service: SolanaService):
+    """Обработать введенный адрес"""
+    logger.info(f"[WITHDRAW] Received address message: {message.text}")
+    try:
+        address = message.text.strip()
+        # Проверяем валидность адреса
+        try:
+            Pubkey.from_string(address)
+        except ValueError:
+            await message.answer(
+                "❌ Некорректный адрес кошелька",
+                reply_markup=ForceReply(selective=True)
+            )
+            return
+
+        # Сохраняем адрес
+        await state.update_data(withdraw_address=address)
+
+        # Показываем меню вывода с обновленной информацией
+        user_id = get_real_user_id(message)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+
+        balance = await solana_service.get_wallet_balance(user.solana_wallet)
+        data = await state.get_data()
+        amount = data.get("withdraw_amount", "Не указана")
+
+        await message.answer(
+            f"💰 Выполняется вывод бонусов\n"
+            f"💰 Сумма для вывода: {_format_price(amount) if isinstance(amount, (int, float)) else amount}\n"
+            f"📍 Адрес получателя: {address}",
+            reply_markup=withdraw_menu_keyboard
+        )
+
+    except Exception as e:
+        logger.error(f"Error handling withdraw address: {e}")
+        await message.answer(
+            "❌ Произошла ошибка при обработке адреса",
+            reply_markup=withdraw_menu_keyboard
         )
