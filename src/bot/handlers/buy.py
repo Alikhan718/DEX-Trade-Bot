@@ -1440,12 +1440,16 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
         user_id = get_real_user_id(message)
 
         auto_buy_settings = await get_user_setting(user_id, 'auto_buy', session)
-        # Если автобай выключен или настройки не найдены, пропускаем
 
         # Проверяем, является ли сообщение mint адресом
         token_address = message.text.strip()
         if not _is_valid_token_address(token_address):
-            return
+            return await message.reply(
+                f"❌ Не допустимый формат адреса токена, для автоматической {'покупки' if auto_buy_settings['type'] == 'buy' else 'продажи'}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                ])
+            )
 
         logger.info(f"Detected mint address: {token_address}")
 
@@ -1500,17 +1504,32 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             )
             return
 
-        # Выполняем покупку с предустановленными параметрами
-        amount_sol = auto_buy_settings['amount_sol']
+        token_info = await token_info_service.get_token_info(token_address)
+        if not token_info:
+            token_info = await token_info_service.get_token_info(token_address)
+
+        sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
+        token_price_sol = token_info.price_usd / sol_price_usd.price_usd
         slippage = auto_buy_settings['slippage']
 
-        token_info = await token_info_service.get_token_info(token_address)
-        sol_price_usd = await token_info_service.get_token_info('So11111111111111111111111111111111111111112')
-        # Get token price before transaction
-        token_price_sol = token_info.price_usd / sol_price_usd.price_usd
-        # Получаем информацию о токене перед покупкой
-        token_info = await token_info_service.get_token_info(token_address)
-        token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(str(token_address)))
+        amount_sol = auto_buy_settings['amount_sol']  # will be changed
+
+        sell_percentage = 100  # initial value in sell case
+
+        if auto_buy_settings['type'] == 'buy':
+            token_amount = float(amount_sol) / float(token_price_sol)
+        else:
+            token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(str(token_address)))
+            sell_percentage = amount_sol  # we store it as amount_sol in sell case it's actually percentage
+            token_amount = (token_balance / sell_percentage * 100)
+            amount_sol = token_amount * token_price_sol  # amount sol = token amount / token price per sol
+            if not token_balance or token_balance == 0 or token_amount > token_balance:
+                return await status_message.edit_text(
+                    "❌ Ошибка: Не достаточно средств на балансе для продажи",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
+                    ])
+                )
 
         if auto_buy_settings['type'] == 'buy':
             tx_signature = await tx_handler.buy_token(
@@ -1519,15 +1538,6 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
                 slippage=slippage
             )
         else:
-            if not token_balance or token_balance == 0:
-                return await status_message.edit_text(
-                    "❌ Ошибка: Не достаточно средств на балансе для продажи",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
-                    ])
-                )
-            sell_percentage = amount_sol
-            amount_sol = float(token_balance)
             tx_signature = await tx_handler.sell_token(
                 token_address=token_address,
                 sell_percentage=sell_percentage,
@@ -1541,16 +1551,16 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             amount_text = (
                 f"💰 Потрачено: {_format_price(amount_sol)} SOL"
                 if is_buy else
-                f"💰 Продано: {_format_price(amount_sol)}% токенов"
+                f"💰 Продано: {_format_price(token_amount)} токенов"
             )
             trade = Trade(
                 user_id=user.id,
                 token_address=token_address,
-                amount=amount_sol / token_price_sol,
+                amount=token_amount,
                 price_usd=token_info.price_usd if token_info and token_info.price_usd else -1.0,
                 amount_sol=amount_sol,
                 created_at=datetime.now(),
-                transaction_type=0 if is_buy else 1,
+                transaction_type=(0 if is_buy else 1),
                 status="SUCCESS",
                 gas_fee=settings['gas_fee'],
                 transaction_hash=str(tx_signature),

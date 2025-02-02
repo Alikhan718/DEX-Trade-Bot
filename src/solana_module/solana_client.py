@@ -415,6 +415,7 @@ class SolanaClient:
         except RetryError as re:
             logger.error(f"Failed to execute Buy transaction after retries: {re}")
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Failed to execute Buy transaction: {e}")
 
     async def get_pump_curve_state(self, curve_address: Pubkey) -> BondingCurveState:

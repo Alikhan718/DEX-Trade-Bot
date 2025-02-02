@@ -17,6 +17,14 @@ class LimitBuyStates(StatesGroup):
     confirm = State()
 
 
+class LimitSellStates(StatesGroup):
+    idle = State()
+    set_trigger_price = State()
+    set_percentage = State()
+    set_slippage = State()
+    confirm = State()
+
+
 class SellStates(StatesGroup):
     waiting_for_token = State()
     waiting_for_percentage = State()
