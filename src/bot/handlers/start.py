@@ -39,6 +39,7 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     # Orders and positions
     [
         InlineKeyboardButton(text="📊 Лимитные Ордера", callback_data="limit_orders"),
+        InlineKeyboardButton(text="💼 Открытые Позиции", callback_data="open_positions")
     ],
     # Security and wallet
     [
