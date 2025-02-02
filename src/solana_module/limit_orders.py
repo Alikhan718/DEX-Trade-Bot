@@ -235,19 +235,20 @@ class AsyncLimitOrders:
                         # Получаем текущую цену токена используя token_info
                         token_info_result = token_info(order.token_address)
                         if not token_info_result or 'priceUsd' not in token_info_result:
-                            logger.warning("[LIMIT_ORDERS] Failed to get price for token %s", order.token_address)
+                            #logger.warning("[LIMIT_ORDERS] Failed to get price for token %s", order.token_address)
                             continue
 
                         current_price = float(token_info_result['priceUsd'])
                         if current_price <= 0:
-                            logger.warning("[LIMIT_ORDERS] Invalid price (<=0) for token %s", order.token_address)
+                            #logger.warning("[LIMIT_ORDERS] Invalid price (<=0) for token %s", order.token_address)
                             continue
 
-                        logger.info(
-                            "[LIMIT_ORDERS] Order #%d: Type=%s, Token=%s, Current Price=%.8f, Target Price=%.8f",
-                            order.id, order.order_type, order.token_address, 
-                            current_price, order.trigger_price_usd
-                        )
+                        #logger.info(
+                        #    "[LIMIT_ORDERS] Order #%d: Type=%s, Token=%s, Current Price=%.8f, Target Price=%.8f",
+                        #    order.id, order.order_type, order.token_address, 
+                        #    current_price, order.trigger_price_usd
+                        #)
+
 
                         # Проверяем условие срабатывания в зависимости от типа ордера
                         should_execute = False
@@ -296,9 +297,9 @@ class AsyncLimitOrders:
         logger.info("[LIMIT_ORDERS] Starting limit orders monitoring with interval %d seconds...", interval)
 
         while self._running:
-            logger.info("[LIMIT_ORDERS] Running price check cycle...")
+            #logger.info("[LIMIT_ORDERS] Running price check cycle...")
             await self.check_and_execute_orders()
-            logger.info("[LIMIT_ORDERS] Price check cycle completed. Waiting %d seconds...", interval)
+            #logger.info("[LIMIT_ORDERS] Price check cycle completed. Waiting %d seconds...", interval)
             await asyncio.sleep(interval)
 
         logger.info("[LIMIT_ORDERS] Limit orders monitoring stopped")
