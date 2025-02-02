@@ -222,6 +222,17 @@ async def handle_edit_setting(callback: CallbackQuery, state: FSMContext, sessio
             await callback.answer("Копитрейд не найден", show_alert=True)
             return
 
+        logger.info(f"Handling attribute: {setting}")
+        if setting == 'is_active':
+            service = CopyTradeService()
+            if not getattr(copy_trade, setting):
+                logger.info(f"Adding copy trade ID:{copy_trade.id}")
+                await service.add_copy_trade(copy_trade)
+            else: 
+                logger.info(f"Removing copy trade ID:{copy_trade.id}")
+                await service.remove_copy_trade(copy_trade)
+
+
         setattr(copy_trade, setting, not getattr(copy_trade, setting))
         await session.commit()
         return await show_copy_settings(callback, session, copy_trade_id)
@@ -320,7 +331,16 @@ async def handle_copy_trade_settings_edit_base(
             return
         if attribute in ["buy_gas_fee", "sell_gas_fee"]:
             value *= 1e9
+        logger.info(f"Handling attribute: {attribute}")
         if attribute in ('copy_sells', 'is_active', 'anti_mev'):
+            if attribute == 'is_active':
+                service = CopyTradeService()
+                if not getattr(item, attribute):
+                    logger.info(f"Adding copy trade {item}")
+                    await service.add_copy_trade(item)
+                else:
+                    logger.info(f"Removing copy trade {item}")
+                    await service.remove_copy_trade(item)
             setattr(item, attribute, not getattr(item, attribute))
         else:
             setattr(item, attribute, value)

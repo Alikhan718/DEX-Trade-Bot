@@ -49,7 +49,7 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
         user = result.unique().scalar_one_or_none()
 
         if not user:
-            await callback_query.answer("❌ Пользователь не найден 1")
+            await callback_query.answer("❌ Пользователь не найден")
             return
 
         # Create SolanaClient instance
@@ -175,7 +175,7 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         user = sell_setting.unique().scalar_one_or_none()
 
         if not user:
-            await message.reply("❌ Пользователь не найден 2")
+            await message.reply("❌ Пользователь не найден")
             return
 
         try:
@@ -280,7 +280,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
 
         if not user:
             logger.error(f"User not found: {user_id}")
-            await callback_query.answer("❌ Пользователь не найден 3")
+            await callback_query.answer("❌ Пользователь не найден")
             return
 
         # Get state data
@@ -361,7 +361,7 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
         # Send status message
         status_message = await callback_query.message.answer(
             "🔄 Выполняется продажа токена...\n"
-            "Пожалуйста, подождиfте"
+            "Пожалуйста, подождите"
         )
 
         # Get current token price
