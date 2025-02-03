@@ -773,21 +773,16 @@ class SolanaClient:
 
             # Extract mint address from transaction
             token_address = None
-            if tx_info.value.transaction.transaction.message.account_keys:
+            if tx_info.value.transaction.transaction.message.post_token_balances:
                 # В BUY транзакции mint находится в account_keys[11]
                 # Это можно увидеть из логов, где mint = "55YanwmkJQrk2SiZRKNKVbLVz7Ht33zg6RU7uYvipump"
                 # token_address = str(tx_info.value.transaction.transaction.message.account_keys[11])
                 # logger.info(f"[CLIENT] Extracted token address: {token_address}")
-
-                for account_key in tx_info.value.transaction.transaction.message.account_keys:
-                    # logger.info(f"[CLIENT] Account key: {account_key}")
-                    if check_mint(account_key):
-                        token_address = account_key
-                        logger.info(f"[CLIENT] Found token address: {token_address}")
+                for tbalance in tx_info.value.transaction.transaction.message.post_token_balances:
+                    print(f"Mint: {tbalance.mint}")
+                    if str(tbalance.mint) != 'So11111111111111111111111111111111111111112':
+                        token_address = str(tbalance.mint.pubkey())
                         break
-                    else:
-                        # logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
-                        pass
 
             # Convert to dict before JSON serialization
             tx_info_dict = {
