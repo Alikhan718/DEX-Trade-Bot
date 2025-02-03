@@ -471,7 +471,7 @@ class CopyTradeManager:
                                 logger.info(f"[DEBUG] - price_usd: {price_usd}")
                                 logger.info(f"[DEBUG] - sol_price_usd: {sol_price_usd.price_usd}")
                                 logger.info(f"[DEBUG] - token_price_sol: {token_price_sol}")
-                                logger.info(f"[DEBUG] - Calculated tokens: {new_transaction.amount_sol / token_price_sol}")
+                                logger.info(f"[DEBUG] - Calculated tokens: {new_transaction.amount_sol}")
                                 if tx_type == "SELL":
                                     logger.info(f"[DEBUG] - Original token_amount from SELL calc: {copy_amount}")
                                 
@@ -481,8 +481,8 @@ class CopyTradeManager:
                                     f"💵 Цена токена лидера (На момент покупки): {_format_price(leader_price_usd)} SOL\n"
                                     f"💵 Цена вашего токена (На момент покупки): {_format_price(price_usd)} SOL\n"
                                     f"💎 Токен: <code>{token_address}</code>\n"
-                                    f"💰 Сумма: {_format_price(new_transaction.amount_sol)} SOL\n"
-                                    f"🔢 Количество токенов: {_format_price(new_transaction.amount_sol / token_price_sol)}\n"
+                                    f"💰 Сумма: {_format_price(new_transaction.amount_sol * token_price_sol if tx_type == 'SELL' else new_transaction.amount_sol)} SOL\n"
+                                    f"🔢 Количество токенов: {_format_price(new_transaction.amount_sol if tx_type == 'SELL' else new_transaction.amount_sol / token_price_sol)}\n"
                                     f"⏱ Время выполнения: {execution_time:.2f} сек\n"
                                     f"🔗 Транзакция: <a href='https://solscan.io/tx/{copied_signature}'>Solscan</a>"
                                 )

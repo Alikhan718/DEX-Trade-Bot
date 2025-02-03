@@ -757,9 +757,12 @@ class SolanaClient:
                 signature_obj,
                 max_supported_transaction_version=0
             )
+            
+            logger.info(f"[CLIENT] Transaction info: {tx_info}")
 
             if not tx_info or not tx_info.value:
                 logger.error(f"[CLIENT] No transaction info found for signature: {signature}")
+
                 return None
 
             logger.info(f"[CLIENT] Successfully retrieved transaction info")
