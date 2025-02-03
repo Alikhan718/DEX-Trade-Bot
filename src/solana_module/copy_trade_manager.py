@@ -177,12 +177,15 @@ class CopyTradeManager:
                     try:
                         # Получаем информацию о транзакции лидера
                         leader_token_info = await self.solana_client.token_info(token_address)
+                        logger.info(f"[CALC] Leader token info: {leader_token_info}")
                         if leader_token_info:
                             platform_id = leader_token_info['platformId']
                             pool_id = leader_token_info['poolId']
                             req = requests.get(
                                 f"https://api.coinmarketcap.com/kline/v3/k-line/candles/{str(platform_id)}/{str(pool_id)}?type=1m&countBack=1")
                             leader_price_usd = req.json()['data'][-1]['close']
+                            logger.info(f"[CALC] Leader token price USD: {leader_price_usd}")
+
                         tx_info = await self.solana_client.get_transaction(signature_obj)
                         if not tx_info:
                             logger.error(f"[MANAGER] Failed to get transaction info for {signature}")
@@ -191,9 +194,12 @@ class CopyTradeManager:
                             await session.commit()
                             continue
                         logger.info(f"[MANAGER] Retrieved transaction info")
+                        logger.info(f"[CALC] Transaction info from RPC: {tx_info}")
+                        
                         token_info_service = TokenInfoService()
                         sol_price_usd = await token_info_service.get_token_info(
                             'So11111111111111111111111111111111111111112')
+                        logger.info(f"[CALC] Current SOL price USD: {sol_price_usd.price_usd}")
 
                         if tx_type == "SELL":
                             # Для SELL транзакций нам нужно получить баланс токенов пользователя
@@ -206,9 +212,11 @@ class CopyTradeManager:
                                 user_client.load_keypair()
                                 token_balance = await user_client.get_token_balance(Pubkey.from_string(token_address))
                                 logger.info(f"[MANAGER] User token balance: {token_balance}")
+                                logger.info(f"[CALC] User's token balance before SELL: {token_balance}")
 
                                 if token_balance <= 0:
                                     logger.error(f"[MANAGER] User has no tokens to sell")
+                                    logger.error(f"[CALC] Zero or negative token balance: {token_balance}")
                                     new_transaction.status = "FAILED"
                                     new_transaction.error = "No tokens to sell"
                                     await session.commit()
@@ -218,16 +226,23 @@ class CopyTradeManager:
                                 token_amount = token_balance * (trade.copy_percentage / 100)
                                 logger.info(
                                     f"[MANAGER] Calculated token amount to sell: {token_amount} ({trade.copy_percentage}%)")
+                                logger.info(f"[CALC] SELL calculation: {token_balance} * ({trade.copy_percentage} / 100) = {token_amount} tokens")
 
                                 # Проверяем минимальную сумму в SOL после конвертации
                                 token_info = await token_info_service.get_token_info(token_address)
+                                logger.info(f"[CALC] Token info for price calculation: {token_info.__dict__}")
+                                
                                 # Get token price before transaction
                                 token_price_sol = token_info.price_usd / sol_price_usd.price_usd
+                                logger.info(f"[CALC] Token price in SOL: {token_info.price_usd} USD / {sol_price_usd.price_usd} USD = {token_price_sol} SOL")
+                                
                                 estimated_sol = token_amount * token_price_sol
+                                logger.info(f"[CALC] Estimated SOL from sale: {token_amount} tokens * {token_price_sol} SOL = {estimated_sol} SOL")
 
                                 if trade.min_amount and estimated_sol < trade.min_amount:
                                     logger.info(
                                         f"[MANAGER] Estimated SOL amount {estimated_sol} is below minimum {trade.min_amount} SOL")
+                                    logger.info(f"[CALC] Sale amount too small: {estimated_sol} SOL < minimum {trade.min_amount} SOL")
                                     new_transaction.status = "SKIPPED"
                                     new_transaction.error = f"Amount below minimum"
                                     await session.commit()
@@ -236,13 +251,12 @@ class CopyTradeManager:
                                 if trade.max_amount and estimated_sol > trade.max_amount:
                                     # Корректируем количество токенов для продажи
                                     token_amount = trade.max_amount / token_price_sol
-                                    logger.info(
-                                        f"[MANAGER] Token amount reduced to {token_amount} to match maximum SOL amount")
-                                copy_amount = token_amount * token_price_sol  # Для SELL это количество токенов
-                                logger.info(f"token_amount: {token_amount} / token_price_sol {token_price_sol} = copy_amount: {copy_amount}")
+                                    logger.info(f"[CALC] Adjusted token amount: {trade.max_amount} SOL / {token_price_sol} SOL/token = {token_amount} tokens")
+                                copy_amount = token_amount
+                                logger.info(f"[CALC] Final SELL amount: {copy_amount} tokens")
 
                             except Exception as e:
-                                logger.error(f"[MANAGER] Error calculating token amount: {str(e)}")
+                                logger.error(f"[CALC] Error in SELL calculations: {str(e)}")
                                 new_transaction.status = "FAILED"
                                 new_transaction.error = f"Failed to calculate token amount: {str(e)}"
                                 await session.commit()
@@ -251,8 +265,11 @@ class CopyTradeManager:
                             # Для BUY транзакций оставляем текущую логику
                             # Получаем сумму транзакции в SOL (уже в lamports)
                             amount_sol = tx_info.get("amount_sol", 0)
+                            logger.info(f"[CALC] Original BUY amount from tx_info: {amount_sol} lamports")
+                            
                             if amount_sol == 0:
                                 logger.error(f"[MANAGER] Failed to get transaction amount for {signature}")
+                                logger.error(f"[CALC] Zero transaction amount in lamports")
                                 new_transaction.status = "FAILED"
                                 new_transaction.error = "Failed to get transaction amount"
                                 await session.commit()
@@ -261,11 +278,13 @@ class CopyTradeManager:
                             # Конвертируем в SOL
                             amount_sol = amount_sol / LAMPORTS_PER_SOL
                             logger.info(f"[MANAGER] Original transaction amount: {amount_sol} SOL")
+                            logger.info(f"[CALC] Converted to SOL: {amount_sol} SOL")
 
                             # Рассчитываем сумму для копирования
                             copy_amount = amount_sol * (trade.copy_percentage / 100)
                             logger.info(
                                 f"[MANAGER] Calculated copy amount: {copy_amount} SOL ({trade.copy_percentage}%)")
+                            logger.info(f"[CALC] BUY calculation: {amount_sol} SOL * ({trade.copy_percentage} / 100) = {copy_amount} SOL")
 
                         # Проверяем общий лимит
                         if trade.total_amount:
@@ -383,13 +402,24 @@ class CopyTradeManager:
                         # Проверяем баланс используя клиент пользователя
                         try:
                             balance = await user_client.get_sol_balance(user.solana_wallet)
-                            logger.info(f"[MANAGER] User balance: {balance} SOL, copy_amount: {copy_amount}")
-                            if balance < copy_amount:
-                                logger.error(f"[MANAGER] Insufficient balance for user {trade.user_id}")
-                                new_transaction.status = "FAILED"
-                                new_transaction.error = "Insufficient balance"
-                                await session.commit()
-                                continue
+                            logger.info(f"[MANAGER] User balance: {balance} SOL")
+                            
+                            # Для SELL транзакций проверяем только наличие SOL для комиссии
+                            min_required_sol = 0.01  # Минимальный баланс SOL для комиссии
+                            if tx_type == "SELL":
+                                if balance < min_required_sol:
+                                    logger.error(f"[MANAGER] Insufficient SOL balance for transaction fee. Required: {min_required_sol} SOL")
+                                    new_transaction.status = "FAILED"
+                                    new_transaction.error = f"Insufficient SOL balance for transaction fee. Required: {min_required_sol} SOL"
+                                    await session.commit()
+                                    continue
+                            else:  # Для BUY транзакций проверяем полную сумму
+                                if balance < copy_amount:
+                                    logger.error(f"[MANAGER] Insufficient balance for user {trade.user_id}")
+                                    new_transaction.status = "FAILED"
+                                    new_transaction.error = "Insufficient balance"
+                                    await session.commit()
+                                    continue
                         except Exception as e:
                             logger.error(f"[MANAGER] Failed to get balance for user {trade.user_id}: {str(e)}")
                             new_transaction.status = "FAILED"
@@ -434,6 +464,17 @@ class CopyTradeManager:
                                 price_usd = token_info['priceUsd']
                                 # Send success notification
                                 token_price_sol = float(price_usd) / sol_price_usd.price_usd
+                                
+                                # Добавляем подробное логирование для отладки
+                                logger.info(f"[DEBUG] Transaction values:")
+                                logger.info(f"[DEBUG] - new_transaction.amount_sol: {new_transaction.amount_sol}")
+                                logger.info(f"[DEBUG] - price_usd: {price_usd}")
+                                logger.info(f"[DEBUG] - sol_price_usd: {sol_price_usd.price_usd}")
+                                logger.info(f"[DEBUG] - token_price_sol: {token_price_sol}")
+                                logger.info(f"[DEBUG] - Calculated tokens: {new_transaction.amount_sol / token_price_sol}")
+                                if tx_type == "SELL":
+                                    logger.info(f"[DEBUG] - Original token_amount from SELL calc: {copy_amount}")
+                                
                                 success_message = (
                                     f"✅ Успешно скопирована транзакция {tx_type}\n\n"
                                     f"🏦 Кошелек лидера: <code>{leader}</code>\n\n"

@@ -228,7 +228,7 @@ class AsyncLimitOrders:
                 result = await session.execute(stmt)
                 active_orders = result.unique().scalars().all()
                 
-                logger.info("[LIMIT_ORDERS] Checking active orders. Found %d orders", len(active_orders))
+                #logger.info("[LIMIT_ORDERS] Checking active orders. Found %d orders", len(active_orders))
 
                 for order in active_orders:
                     try:
@@ -286,7 +286,7 @@ class AsyncLimitOrders:
                 logger.error("[LIMIT_ORDERS] Error checking orders: %s", str(e))
                 logger.error("[LIMIT_ORDERS] Traceback: %s", traceback.format_exc())
 
-            logger.info("[LIMIT_ORDERS] Price check cycle completed. Waiting 15 seconds...")
+            #logger.info("[LIMIT_ORDERS] Price check cycle completed. Waiting 15 seconds...")
 
     async def monitor_prices(self, interval: int = 20):
         """

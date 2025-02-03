@@ -77,12 +77,12 @@ def analyze_transaction(tx_data: GetTransactionResp) -> None:
         print(f"Change:       {change_data['change']}")
         change_data['change'] = float(change_data['change'])
         if 'So11111111111111111111111111111111111111112' == str(mint):
-            if change_data['change'] > 0:
+            if change_data['change'] < 0:
                 return 'BUY'
             else:
                 return 'SELL'
         else:
-            if change_data['change'] < 0:
+            if change_data['change'] > 0:
                 return 'BUY'
             else:
                 return 'SELL'
