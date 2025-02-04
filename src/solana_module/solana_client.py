@@ -762,31 +762,79 @@ class SolanaClient:
 
             if not tx_info or not tx_info.value:
                 logger.error(f"[CLIENT] No transaction info found for signature: {signature}")
-
                 return None
 
             logger.info(f"[CLIENT] Successfully retrieved transaction info")
 
             # Extract pre and post balances
-            pre_balances = tx_info.value.transaction.meta.pre_balances
-            post_balances = tx_info.value.transaction.meta.post_balances
+            #pre_balances = tx_info.value.transaction.meta.pre_balances
+            #post_balances = tx_info.value.transaction.meta.post_balances
+
+            meta = tx_info.value.transaction.meta
+            pre_balances = {}
+            post_balances = {}
+
+            if meta and meta.pre_token_balances:
+                pre_balances = {balance.mint: int(balance.ui_token_amount.amount) for balance in meta.pre_token_balances}
+            if meta and meta.post_token_balances:
+                post_balances = {balance.mint: int(balance.ui_token_amount.amount) for balance in meta.post_token_balances}
+
+            # Логирование балансов до и после транзакции
+            logger.info(f"[CLIENT] Pre balances: {pre_balances}")
+            logger.info(f"[CLIENT] Post balances: {post_balances}")
 
             # Extract mint address from transaction
             token_address = None
-            if tx_info.value.transaction.transaction.message.post_token_balances:
+            logger.info(f"[CLIENT] Transaction info - POST TOKEN BALANCES: {tx_info.value.transaction.meta.post_token_balances}")
+
+            # Определение адреса токена
+            # Исключаем SOL и берём первый найденный токен
+            token_address = next(
+                (mint for mint in post_balances.keys() if str(mint) != "So11111111111111111111111111111111111111112"), 
+                None
+            )
+            logger.info(f"[CLIENT] Token address: {token_address}")
+            #if tx_info.value.transaction.transaction.message.post_token_balances:
                 # В BUY транзакции mint находится в account_keys[11]
                 # Это можно увидеть из логов, где mint = "55YanwmkJQrk2SiZRKNKVbLVz7Ht33zg6RU7uYvipump"
                 # token_address = str(tx_info.value.transaction.transaction.message.account_keys[11])
                 # logger.info(f"[CLIENT] Extracted token address: {token_address}")
-                for tbalance in tx_info.value.transaction.transaction.message.post_token_balances:
-                    print(f"Mint: {tbalance.mint}")
-                    if str(tbalance.mint) != 'So11111111111111111111111111111111111111112':
-                        token_address = str(tbalance.mint.pubkey())
-                        break
+                #for tbalance in tx_info.value.transaction.transaction.message.post_token_balances:
+                #    print(f"Mint: {tbalance.mint}")
+                #    if str(tbalance.mint) != 'So11111111111111111111111111111111111111112':
+                #        token_address = str(tbalance.mint.pubkey())
+                #        break
+
+
+            #if tx_info.value.transaction.transaction.message.account_keys:
+            #    for account_key in tx_info.value.transaction.transaction.message.account_keys:
+            #        logger.info(f"[CLIENT] Account key: {account_key}")
+            #        if check_mint(account_key):
+            #            token_address = account_key
+
+            #            logger.info(f"[CLIENT] Found token address: {token_address}")
+            #            break
+            #        else:
+            #            logger.info(f"[CLIENT] Account key is not a mint: {account_key}")
+            #            pass
+
 
             # Convert to dict before JSON serialization
+            #tx_info_dict = {
+            #    "amount_sol": abs(pre_balances[0] - post_balances[0]) if pre_balances and post_balances else 0,
+            #    "token_address": token_address,
+            #    "raw_data": {
+            #        "pre_balances": pre_balances,
+            #        "post_balances": post_balances,
+            #        "slot": tx_info.value.slot,
+            #        "block_time": tx_info.value.block_time
+            #    }
+            #}
+
+            # Формирование результирующего словаря с сохранением исходного формата
             tx_info_dict = {
-                "amount_sol": abs(pre_balances[0] - post_balances[0]) if pre_balances and post_balances else 0,
+                "amount_sol": abs(pre_balances.get("So11111111111111111111111111111111111111112", 0) -
+                                post_balances.get("So11111111111111111111111111111111111111112", 0)),
                 "token_address": token_address,
                 "raw_data": {
                     "pre_balances": pre_balances,

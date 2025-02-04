@@ -64,6 +64,7 @@ def analyze_transaction(tx_data: GetTransactionResp) -> None:
     
     # Analyze changes
     changes = analyze_token_changes(pre_token_balances, post_token_balances)
+    print("[SWAP] changes: ", changes)
     
     # Print results
     print("Token Exchange Analysis:")
@@ -101,8 +102,10 @@ def swap_type(signature: str) -> str:
     # Sample transaction data would go here
     client = Client('https://api.mainnet-beta.solana.com')
     tx_data = client.get_transaction(sig, max_supported_transaction_version=0)
+    print("[SWAP] tx_data: ", tx_data)
     try:
         ans = analyze_transaction(tx_data)
+        print("[SWAP] ans: ", ans)
         return ans
     except Exception as e:
         print(f"Error analyzing transaction: {str(e)}")
