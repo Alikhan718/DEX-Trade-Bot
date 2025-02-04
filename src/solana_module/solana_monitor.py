@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+from pprint import pprint
+
 import websockets
 from typing import Set, Dict
 from dotenv import load_dotenv
@@ -17,6 +19,7 @@ WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={os.getenv('API_KEY')}"
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
 
 class SolanaMonitor:
     def __init__(self):
@@ -84,12 +87,10 @@ class SolanaMonitor:
             # logger.info(f"[MONITOR] Transaction logs: {json.dumps(logs, indent=2)}")
 
             # Infer transaction type from logs
-            
-            
 
             if tx_type == "BUY":
                 logger.info(f"[MONITOR] BUY transaction detected: {signature}")
-                
+
                 # Extract token address from transaction
                 token_address = None
                 try:
@@ -101,7 +102,7 @@ class SolanaMonitor:
                         logger.info(f"[MONITOR] Extracted token address: {token_address}")
                 except Exception as e:
                     logger.error(f"[MONITOR] Error extracting token address: {str(e)}")
-                
+
                 # Call transaction callback with signature
                 if self.transaction_callback:
                     logger.info(f"[MONITOR] Calling transaction callback for BUY transaction")
@@ -135,7 +136,7 @@ class SolanaMonitor:
                         logger.info(f"[MONITOR] Extracted token address: {token_address}")
                 except Exception as e:
                     logger.error(f"[MONITOR] Error extracting token address: {str(e)}")
-                
+
                 # Call transaction callback with signature
                 if self.transaction_callback:
                     logger.info(f"[MONITOR] Calling transaction callback for SELL transaction")
@@ -174,29 +175,31 @@ class SolanaMonitor:
         """
         Add a leader to monitor. Starts monitoring immediately if monitoring is active.
         """
-        if leader not in self.leader_follower_map:
+        if leader not in self.leader_follower_map.keys():
             self.leader_follower_map[leader] = set()
             logger.info(f"Added leader {leader} for monitoring.")
 
             # Start monitoring the new leader if the monitor is active
-            if self.is_monitoring and leader not in self.tasks:
-                task = asyncio.create_task(self.connect_and_subscribe(leader))
-                self.tasks[leader] = task
-                logger.info(f"Started monitoring leader {leader[:4]}...{leader[:-4]}.")
+        if leader not in self.tasks.keys():
+            task = asyncio.create_task(self.connect_and_subscribe(leader))
+            self.tasks[leader] = task
+            logger.info(f"Started monitoring leader {leader[:4]}...{leader[:-4]}.")
+        pprint(self.tasks)
 
     def remove_leader(self, leader: str):
         """
         Remove leader from monitor. Starts monitoring immediately if monitoring is active.
         """
-        if leader not in self.leader_follower_map:
+        if leader in self.leader_follower_map.keys():
             self.leader_follower_map[leader] = set()
             logger.info(f"Added leader {leader} for monitoring.")
 
             # Start monitoring the new leader if the monitor is active
-            if self.is_monitoring and leader in self.tasks:
+            if leader in self.tasks.keys():
                 self.tasks[leader].cancel()
                 del self.tasks[leader]
                 logger.info(f"Removed monitoring for leader {leader[:4]}...{leader[:-4]}.")
+        pprint(self.tasks)
 
     def add_relationship(self, leader: str, follower: str):
         """
@@ -224,6 +227,7 @@ class SolanaMonitor:
                 task = asyncio.create_task(self.connect_and_subscribe(leader))
                 self.tasks[leader] = task
         logger.info(f"Started monitoring {count} leaders.")
+        pprint(self.tasks)
 
     async def stop_monitoring(self):
         """

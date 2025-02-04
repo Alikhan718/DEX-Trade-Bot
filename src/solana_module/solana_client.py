@@ -635,7 +635,7 @@ class SolanaClient:
             if create_associated:
                 associated_token_account = await self.create_associated_token_account(token_address)
             response = await self.client.get_token_account_balance(associated_token_account if create_associated else token_address)
-            if response.value:
+            if hasattr(response, 'value'):
                 return float(response.value.amount) / 10 ** TOKEN_DECIMALS
             return 0
         except Exception as e:

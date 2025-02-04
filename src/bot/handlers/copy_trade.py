@@ -227,10 +227,10 @@ async def handle_edit_setting(callback: CallbackQuery, state: FSMContext, sessio
             service = CopyTradeService()
             if not getattr(copy_trade, setting):
                 logger.info(f"Adding copy trade ID:{copy_trade.id}")
-                await service.add_copy_trade(copy_trade)
+                await service.add_copy_trade(copy_trade, session)
             else: 
                 logger.info(f"Removing copy trade ID:{copy_trade.id}")
-                await service.remove_copy_trade(copy_trade)
+                await service.remove_copy_trade(copy_trade, session)
 
 
         setattr(copy_trade, setting, not getattr(copy_trade, setting))
@@ -513,7 +513,7 @@ async def handle_delete_copy_trade(callback: CallbackQuery, session: AsyncSessio
 
     # Удаляем из сервиса перед удалением из базы
     service = CopyTradeService()
-    await service.remove_copy_trade(ct)
+    await service.remove_copy_trade(ct, session)
 
     await session.delete(ct)
     await session.commit()
@@ -763,7 +763,7 @@ async def handle_address_input(message: Message, state: FSMContext, session: Asy
 
     # Добавляем копитрейд в сервис
     service = CopyTradeService()
-    await service.add_copy_trade(new_copy_trade)
+    await service.add_copy_trade(new_copy_trade, session)
 
     # Показываем настройки нового копитрейда
     keyboard = await get_copy_trade_settings_keyboard(new_copy_trade.id, session)

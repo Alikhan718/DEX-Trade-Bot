@@ -1,5 +1,3 @@
-import traceback
-
 import logging
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -13,112 +11,120 @@ logger = logging.getLogger(__name__)
 
 
 class CopyTradeService:
-    _instance: Optional['CopyTradeService'] = None
+    _instance: Optional["CopyTradeService"] = None
     _bot: Optional[Bot] = None
 
     def __new__(cls):
+        """Создаем единственный экземпляр синглтона"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            cls._instance._initialized = False  # Флаг для отслеживания инициализации
         return cls._instance
 
     def __init__(self):
-        if not hasattr(self, 'initialized'):
-            self.solana_client = SolanaClient(100000)  # Default compute unit price
-            self.manager = None  # Will be initialized in start()
-            self.Session = None
-            self.initialized = True
+        """Инициализируем только один раз"""
+        if self._initialized:
+            return
+
+        self.solana_client = SolanaClient(100000)  # Default compute unit price
+        self.manager: Optional[CopyTradeManager] = None
+        self.Session: Optional[async_sessionmaker] = None
+        self._initialized = True  # Флаг, предотвращающий повторную инициализацию
 
     @classmethod
     def set_bot(cls, bot: Bot):
-        """Set the bot instance to be used by the service"""
+        """Устанавливаем экземпляр бота"""
         cls._bot = bot
         logger.info("Bot instance set in CopyTradeService")
 
     async def start(self, session: AsyncSession):
-        """Start the copy trade service"""
-        try:
-            if not self._bot:
-                raise ValueError("Bot instance not set. Call set_bot() first.")
+        """Запуск сервиса копи-трейда"""
+        if not self._bot:
+            raise ValueError("Bot instance not set. Call set_bot() first.")
 
-            # Initialize manager with bot instance
+        try:
+            # Инициализация менеджера
             self.manager = CopyTradeManager(self.solana_client, self._bot)
-            # Store session factory
+
+            # Создание фабрики сессий
             self.Session = async_sessionmaker(
                 session.bind,
                 expire_on_commit=False
             )
 
-            # Load active trades from database
+            # Загрузка активных трейдов из базы
             await self.manager.load_active_trades(session)
 
-            # Set up transaction callback
+            # Установка обработчика транзакций
             self.manager.monitor.set_transaction_callback(self.handle_transaction_with_session)
 
-            logger.info("Copy trade service started")
+            logger.info("Copy Trade service started")
         except Exception as e:
-            logger.error(f"Error starting copy trade service: {e}")
+            logger.error(f"Error while starting copy trade service: {e}", exc_info=True)
             raise
 
     async def stop(self):
-        """Stop the copy trade service"""
+        """Остановка сервиса"""
         try:
-            await self.manager.monitor.stop_monitoring()
-            logger.info("Copy trade service stopped")
+            if self.manager:
+                await self.manager.monitor.stop_monitoring()
+            logger.info("COPY TRADE STOPPED")
         except Exception as e:
-            logger.error(f"Error stopping copy trade service: {e}")
+            logger.error(f"ERROR COPY TRADE: {e}", exc_info=True)
             raise
 
     async def handle_transaction_with_session(self, leader: str, tx_type: str, signature: str, token_address: str):
-        """Create new session and handle transaction"""
+        """Создает новую сессию и обрабатывает транзакцию"""
         if not self.Session:
-            logger.error("Session factory not initialized")
+            logger.error("ERROR COPY TRADE")
             return
 
         async with self.Session() as session:
             try:
                 await self.handle_transaction(leader, tx_type, signature, token_address, session)
-            except Exception as e:
-                logger.error(f"Error handling transaction: {e}")
-                await session.rollback()
-            else:
                 await session.commit()
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"ERROR COPY TRADE: {e}", exc_info=True)
 
-    async def handle_transaction(self, leader: str, tx_type: str, signature: str, token_address: str,
-                                 session: AsyncSession):
-        """Handle detected transaction"""
+    async def handle_transaction(self, leader: str, tx_type: str, signature: str, token_address: str, session: AsyncSession):
+        """Обрабатывает найденную транзакцию"""
         try:
-            await self.manager.process_transaction(leader, tx_type, signature, token_address, session)
+            if self.manager:
+                await self.manager.process_transaction(leader, tx_type, signature, token_address, session)
         except Exception as e:
-            logger.error(f"Error handling transaction: {e}")
+            logger.error(f"ERROR COPY TRADE: {e}", exc_info=True)
 
-    async def add_copy_trade(self, copy_trade: CopyTrade):
-        """Add new copy trade"""
+    async def add_copy_trade(self, copy_trade: CopyTrade, session: AsyncSession):
+        """Добавляет копи-трейд"""
         try:
-            if copy_trade.is_active:
+            if self.manager:
                 await self.manager.add_copy_trade(copy_trade)
-            logger.info(f"Added copy trade {copy_trade.id} for wallet {copy_trade.wallet_address}")
+            logger.info(f"COPY TRADE:{copy_trade.id} FOR WALLET {copy_trade.wallet_address}")
         except Exception as e:
-            logger.error(f"Error adding copy trade: {e}")
+            logger.error(f"ERROR COPY TRADE: {e}", exc_info=True)
             raise
 
-    async def remove_copy_trade(self, copy_trade: CopyTrade):
-        """Remove copy trade"""
+    async def remove_copy_trade(self, copy_trade: CopyTrade, session: AsyncSession = None):
+        """Удаляет копи-трейд"""
         try:
-            await self.manager.remove_copy_trade(copy_trade)
-            logger.info(f"Removed copy trade {copy_trade.id}")
+            if self.manager:
+                await self.manager.remove_copy_trade(copy_trade)
+            logger.info(f"DELETE COPY TRADE {copy_trade.id}")
         except Exception as e:
-            logger.error(f"Error removing copy trade: {e}")
+            logger.error(f"ERROR COPY TRADE: {e}", exc_info=True)
             raise
 
     async def toggle_copy_trade(self, copy_trade: CopyTrade, session: AsyncSession):
-        """Toggle copy trade active status"""
+        """Переключает статус копи-трейда (активен/не активен)"""
         try:
             if copy_trade.is_active:
                 await self.add_copy_trade(copy_trade)
             else:
                 await self.remove_copy_trade(copy_trade)
+
             await session.commit()
-            logger.info(f"Toggled copy trade {copy_trade.id} active status to {copy_trade.is_active}")
+            logger.info(f"STATUS COPY TRADE {copy_trade.id} CHANGED TO {copy_trade.is_active}")
         except Exception as e:
-            logger.error(f"Error toggling copy trade: {e}")
+            logger.error(f"ERROR TOGGLE COPY TRADE: {e}", exc_info=True)
             raise

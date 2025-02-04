@@ -152,6 +152,15 @@ class CopyTradeManager:
                             f"Причина: Копирование продаж отключено"
                         )
                         continue
+                    query = await session.execute(
+                        select(CopyTradeTransaction).where(
+                            CopyTradeTransaction.original_signature == signature,
+                            CopyTradeTransaction.copy_trade_id == trade.id
+                        )
+                    )
+                    existing_transaction = query.unique().scalar_one_or_none()
+                    if existing_transaction:
+                        continue
 
                     # Создаем запись о транзакции
                     new_transaction = CopyTradeTransaction(
@@ -405,7 +414,7 @@ class CopyTradeManager:
                             logger.info(f"[MANAGER] User balance: {balance} SOL")
                             
                             # Для SELL транзакций проверяем только наличие SOL для комиссии
-                            min_required_sol = 0.01  # Минимальный баланс SOL для комиссии
+                            min_required_sol = 0.0001  # Минимальный баланс SOL для комиссии
                             if tx_type == "SELL":
                                 if balance < min_required_sol:
                                     logger.error(f"[MANAGER] Insufficient SOL balance for transaction fee. Required: {min_required_sol} SOL")
@@ -576,18 +585,18 @@ class CopyTradeManager:
         wallet = copy_trade.wallet_address
         if wallet not in self.active_trades:
             self.active_trades[wallet] = set()
-            self.monitor.add_leader(wallet)
         self.active_trades[wallet].add(copy_trade)
         self.monitor.add_relationship(wallet, str(copy_trade.id))
+        self.monitor.add_leader(wallet)
 
     async def remove_copy_trade(self, copy_trade: CopyTrade):
         """Удалить копитрейд из мониторинга"""
         wallet = copy_trade.wallet_address
-        if wallet in self.active_trades:
+        if wallet in self.active_trades.keys():
             self.active_trades[wallet].discard(copy_trade)
-            self.monitor.remove_leader(wallet)
-            if not self.active_trades[wallet]:
+            if self.active_trades[wallet]:
                 del self.active_trades[wallet]
+        self.monitor.remove_leader(wallet)
 
     async def handle_transaction_with_session(self, leader: str, tx_type: str, signature: str,
                                               token_address: Optional[str]):
