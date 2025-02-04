@@ -783,6 +783,8 @@ class SolanaClient:
             logger.info(f"[CLIENT] Pre balances: {pre_balances}")
             logger.info(f"[CLIENT] Post balances: {post_balances}")
 
+            #amount_sol = abs(pre_balances[0] - post_balances[0]) if pre_balances and post_balances else 0
+
             # Extract mint address from transaction
             token_address = None
             logger.info(f"[CLIENT] Transaction info - POST TOKEN BALANCES: {tx_info.value.transaction.meta.post_token_balances}")
@@ -831,10 +833,11 @@ class SolanaClient:
             #    }
             #}
 
+            pre_balances1 = tx_info.value.transaction.meta.pre_balances
+            post_balances1 = tx_info.value.transaction.meta.post_balances
             # Формирование результирующего словаря с сохранением исходного формата
             tx_info_dict = {
-                "amount_sol": abs(pre_balances.get("So11111111111111111111111111111111111111112", 0) -
-                                post_balances.get("So11111111111111111111111111111111111111112", 0)),
+                "amount_sol": abs(pre_balances1[0] - post_balances1[0]) if pre_balances1 and post_balances1 else 0,
                 "token_address": token_address,
                 "raw_data": {
                     "pre_balances": pre_balances,
