@@ -91,7 +91,7 @@ def analyze_transaction(tx_data: GetTransactionResp) -> None:
                 return 'SELL'
         else: # PUMPFUN
             print("NO IT'S PUMPFUN")
-            if change_data['change'] < 0:
+            if change_data['change'] > 0:
                 return 'BUY'
             else:
                 return 'SELL'
