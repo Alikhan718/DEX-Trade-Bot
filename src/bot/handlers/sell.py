@@ -53,7 +53,7 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
             return
 
         # Create SolanaClient instance
-        solana_client = SolanaClient(compute_unit_price=100000)  # Default compute unit price
+        solana_client = SolanaClient(compute_unit_price=1000000)  # Default compute unit price
 
         # Get user's tokens
         tx_handler = UserTransactionHandler(user.private_key, 10000000)
@@ -486,7 +486,7 @@ async def handle_set_slippage(callback_query: types.CallbackQuery, state: FSMCon
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 0.05 else ''} 0.5%",
+                InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 0.5 else ''} 0.5%",
                                      callback_data="sell_slippage_0.5"),
                 InlineKeyboardButton(text=f"{'✅️' if chosen_slippage == 1 else ''} 1%",
                                      callback_data="sell_slippage_1"),
@@ -532,7 +532,7 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
         if choice == "custom":
             await callback_query.message.answer(
                 "⚙️ Пользовательский Slippage для продажи\n\n"
-                "Введите значение в процентах (например, 1.5):",
+                "Введите значение в процентах (например, 15):",
                 reply_markup=ForceReply(selective=True)
             )
             await state.set_state(SellStates.waiting_for_slippage)
@@ -719,9 +719,13 @@ async def show_sell_menu(message: types.Message, state: FSMContext, session: Asy
 async def handle_custom_slippage(message: types.Message, state: FSMContext, session: AsyncSession):
     """Handle custom slippage input"""
     try:
-        slippage = float(message.text.replace(",", "."))
+        # Удаляем символ % если он есть и заменяем запятую на точку
+        slippage_text = message.text.strip().replace("%", "").replace(",", ".")
+        slippage = float(slippage_text)
+        
         if slippage <= 0 or slippage > 100:
             raise ValueError("Invalid slippage value")
+            
         user_id = get_real_user_id(message)
         sell_setting = await get_user_setting(user_id, 'sell', session)
         sell_setting['slippage'] = slippage
@@ -736,7 +740,7 @@ async def handle_custom_slippage(message: types.Message, state: FSMContext, sess
 
     except ValueError:
         await message.reply(
-            "❌ Неверное значение. Введите число от 0.1 до 100:",
+            "❌ Неверное значение. Введите число от 0.1 до 100 (можно с символом % или без):",
             reply_markup=ForceReply(selective=True)
         )
 
@@ -898,9 +902,10 @@ async def on_set_trigger_price_button(callback_query: types.CallbackQuery, state
 async def handle_trigger_price_input(message: types.Message, state: FSMContext, session: AsyncSession):
     """Handle trigger price input"""
     try:
-        # Удаляем все нецифровые символы, кроме минуса и точки
-        cleaned_text = ''.join(c for c in message.text if c.isdigit() or c in '.-')
-        trigger_price = float(cleaned_text)
+        # Удаляем символ % если он есть и заменяем запятую на точку
+        trigger_text = message.text.strip().replace("%", "").replace(",", ".")
+        trigger_price = float(trigger_text)
+        
         await state.update_data(trigger_price=trigger_price)
         
         # Send confirmation message
@@ -911,6 +916,6 @@ async def handle_trigger_price_input(message: types.Message, state: FSMContext, 
         
     except ValueError:
         await message.reply(
-            "❌ Неверное значение. Введите число (например: 5 или -5):",
+            "❌ Неверное значение. Введите число (например: 5 или -5, можно с символом % или без):",
             reply_markup=ForceReply(selective=True)
         )

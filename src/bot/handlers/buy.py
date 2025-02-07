@@ -559,7 +559,7 @@ async def handle_slippage_choice(callback_query: types.CallbackQuery, state: FSM
 async def handle_custom_slippage(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle custom slippage input"""
     try:
-        slippage = float(callback_query.text.replace(",", "."))
+        slippage = float(callback_query.text.strip().replace("%", "").replace(",", "."))
         if slippage <= 0 or slippage > 100:
             raise ValueError("Invalid slippage value")
 
@@ -578,7 +578,7 @@ async def handle_custom_slippage(callback_query: types.CallbackQuery, state: FSM
 
     except ValueError:
         await callback_query.reply(
-            "❌ Неверное значение. Введите число от 0.1 до 100:",
+            "❌ Неверное значение. Введите число от 0.1 до 100 (можно с символом % или без):",
             reply_markup=ForceReply(selective=True)
         )
 
@@ -823,7 +823,7 @@ async def handle_trigger_price_input(message: types.Message, state: FSMContext, 
     try:
         # Проверяем введенное значение
         try:
-            trigger_price = float(message.text.replace(',', '.').strip())
+            trigger_price = float(message.text.strip().replace("%", "").replace(",", "."))
         except ValueError:
             await message.reply(
                 "❌ Пожалуйста, введите числовое значение",
@@ -1121,7 +1121,7 @@ async def on_limit_buy_slippage_input(message: types.Message, state: FSMContext)
     Сохраняем slippage в FSM.
     """
     try:
-        text = message.text.strip().replace(",", ".")
+        text = message.text.strip().replace("%", "").replace(",", ".")
         slippage = float(text)
         if slippage <= 0 or slippage > 100:
             raise ValueError("Slippage out of range")
@@ -1405,7 +1405,7 @@ async def handle_auto_buy_slippage_input(message: types.Message, state: FSMConte
     try:
         # Проверяем введенное значение
         try:
-            slippage = float(message.text.strip())
+            slippage = float(message.text.strip().replace("%", "").replace(",", "."))
             if slippage <= 0 or slippage > 100:
                 raise ValueError("Slippage must be between 0 and 100")
         except ValueError:

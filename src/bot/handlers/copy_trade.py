@@ -306,7 +306,7 @@ async def handle_copy_trade_settings_edit_base(
             return
         attribute_info = compact_attributes.get(attribute)
         # Получаем значение из сообщения
-        value = message.text.strip()
+        value = message.text.strip().replace("%", "").replace(",", ".")
         attribute_type = attribute_info.get('type')
         attribute_name = attribute_info.get('name')
         attribute_unit = attribute_info.get('unit')

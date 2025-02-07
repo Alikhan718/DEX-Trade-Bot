@@ -249,7 +249,7 @@ async def handle_custom_settings_edit_base(
             return
         attribute_info = attribute_name_dict.get(attribute)
         # Получаем значение из сообщения
-        value = message.text.strip()
+        value = message.text.strip().replace("%", "").replace(",", ".")
         attribute_type = attribute_info.get('type')
         attribute_name = attribute_info.get('name')
         attribute_unit = attribute_info.get('unit')
@@ -304,7 +304,7 @@ async def handle_buy_gas_fee(message: types.Message, state: FSMContext, session:
 
 @router.message(BuySettingStates.waiting_for_slippage, flags={"priority": 5})
 async def handle_buy_slippage(message: types.Message, state: FSMContext, session: AsyncSession):
-    """Обработчик для установки значения Gas Fee"""
+    """Обработчик для установки значения slippage"""
     return await handle_custom_settings_edit_base(
         setting_type="buy",
         attribute="slippage",
