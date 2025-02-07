@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class SolanaMonitor:
     def __init__(self):
-        self.client = SolanaClient(compute_unit_price=os.getenv('COMPUTE_UNIT_PRICE'))
+        self.client = SolanaClient(1000000)
         self.leader_follower_map: Dict[str, Set[str]] = {}
         self.total_transactions_processed = 0
         self.is_monitoring = False

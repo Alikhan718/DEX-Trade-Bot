@@ -100,10 +100,10 @@ class RateLimiter:
 
 
 # Инициализация RateLimiter: например, max 3 вызова в секунду
-rate_limiter = RateLimiter(max_calls=1, period=1.0)  # More conservative rate limit
+rate_limiter = RateLimiter(max_calls=1, period=0)  # More conservative rate limit
 
 # Добавляем глобальный rate limiter для всех клиентов
-global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
+global_rate_limiter = RateLimiter(max_calls=5, period=0)
 
 
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
