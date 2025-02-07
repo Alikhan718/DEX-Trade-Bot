@@ -903,49 +903,43 @@ class SolanaClient:
         except requests.exceptions.RequestException as e:
             print(f"Произошла ошибка при выполнении запроса: {e}")
 
-    async def get_tokens(self, wallet_address: str, tx_handler=None) -> list:
+async def get_tokens(self, wallet_address: str, tx_handler=None) -> list:
         """Оптимизированный метод получения токенов кошелька."""
-        token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
+        response = await self.client.get_token_accounts_by_owner_json_parsed(Pubkey.from_string(wallet_address), opts=TokenAccountOpts(program_id=Pubkey.from_string('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')))
 
-        if not token_accounts:
-            return []
+        # Запрос к API
+        data = response.value
+        print(response.value)
+        
+        def get_mints_with_balance(data):
+            """Извлекает все mint и их балансы (lamports), добавляет только те, у которых баланс > 0."""
+            mints_with_balance = []
 
-        # Получаем последние транзакции для всех токенов ПАРАЛЛЕЛЬНО
-        signature_tasks = [self.client.get_signatures_for_address(token) for token in token_accounts]
-        signatures = await asyncio.gather(*signature_tasks, return_exceptions=True)
+            for account in data:
+                try:
+                    mint = account.account.data.parsed["info"]["mint"]
+                    lamports = int(account.account.data.parsed["info"]["tokenAmount"]["uiAmount"])
 
-        # Извлекаем последние подписи, если они есть
-        last_signatures = [
-            sig.value[0].signature for sig in signatures if hasattr(sig, "value") and sig.value
-        ]
+                    if lamports > 0:
+                        mints_with_balance.append(mint)
 
-        if not last_signatures:
-            logger.info("No transactions found for tokens.")
-            return []
+                except KeyError:
+                    continue  # Если нет нужных ключей, пропускаем
 
-        # Параллельно запрашиваем информацию о транзакциях
-        transaction_tasks = [self.get_transaction(sig) for sig in last_signatures]
-        transactions = await asyncio.gather(*transaction_tasks, return_exceptions=True)
+            return mints_with_balance
 
-        mints = []
+        # Извлекаем все mint'ы с ненулевым балансом
+        token_addresses = get_mints_with_balance(data)
+        print("Токены с ненулевым балансом:", token_addresses)
+        
         token_tasks = []
-
-        for mint, tx in zip(token_accounts, transactions):
-            if isinstance(tx, Exception):
-                logger.error(f"Skipping token {mint} due to transaction fetch error: {tx}")
-                continue
-
-            token_address = tx.get("token_address") if tx else None
-            if not token_address:
-                logger.error(f"Skipping token {mint} due to missing token_address in transaction")
-                continue
-
+        for token_address in token_addresses:
             # Создаем асинхронную задачу для получения информации о токене
             token_tasks.append(self.token_info(token_address))
-
+        mints = []
         # Запрашиваем всю информацию о токенах параллельно
         token_infos = await asyncio.gather(*token_tasks, return_exceptions=True)
-        for mint, ti in zip(token_accounts, token_infos):
+        for mint, ti in zip(token_addresses, token_infos):
             if isinstance(ti, Exception):
                 logger.error(f"Skipping token {mint} due to token_info fetch error: {ti}")
                 continue
