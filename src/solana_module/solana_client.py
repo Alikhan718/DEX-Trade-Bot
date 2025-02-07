@@ -1005,61 +1005,71 @@ class SolanaClient:
             print(f"Произошла ошибка при выполнении запроса: {e}")
 
     async def get_tokens(self, wallet_address: str, tx_handler=None) -> list:
-        """Оптимизированный метод получения токенов кошелька."""
-        token_accounts = await self.get_account_tokens(Pubkey.from_string(wallet_address))
-        
-        if not token_accounts:
-            return []
-        
-        mints = []
+            """Оптимизированный метод получения токенов кошелька."""
+            response = await self.client.get_token_accounts_by_owner_json_parsed(Pubkey.from_string(wallet_address), opts=TokenAccountOpts(program_id=Pubkey.from_string('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')))
 
-        # Получаем последние транзакции для всех токенов ПАРАЛЛЕЛЬНО
-        signature_tasks = [self.client.get_signatures_for_address(token) for token in token_accounts]
-        signatures = await asyncio.gather(*signature_tasks, return_exceptions=True)
-        for sss in signatures:
-            for i in range(len(sss.value)):
-                transaction = await self.get_transaction(sss.value[i].signature)
-                if transaction['token_address']:
-                    mints.append(transaction['token_address'])
-                    break
-
-        token_tasks = []
-        for mint in mints:
-            token_tasks.append(self.token_info(str(mint)))
+            # Запрос к API
+            data = response.value
+            print(response.value)
             
-        ans = []
-        # Запрашиваем всю информацию о токенах параллельно
-        token_infos = await asyncio.gather(*token_tasks, return_exceptions=True)
-        for mint, ti in zip(token_accounts, token_infos):
-            if isinstance(ti, Exception):
-                logger.error(f"Skipping token {mint} due to token_info fetch error: {ti}")
-                continue
+            def get_mints_with_balance(data):
+                """Извлекает все mint и их балансы (lamports), добавляет только те, у которых баланс > 0."""
+                mints_with_balance = []
 
-            if not isinstance(ti, dict) or "baseToken" not in ti:
-                logger.error(f"Skipping token {mint} due to unexpected token_info format: {ti}")
-                continue
+                for account in data:
+                    try:
+                        mint = account.account.data.parsed["info"]["mint"]
+                        lamports = int(account.account.data.parsed["info"]["tokenAmount"]["uiAmount"])
 
-            try:
-                token_name = ti["baseToken"].get("name", "Unknown")
-                token_symbol = ti["baseToken"].get("symbol", "Unknown")
-                address = ti["baseToken"].get("address")
-                market_cap = ti.get("marketCap", 0)
-                priceUsd = float(ti.get("priceUsd"))
-                print(address)
-                append = True
-                balance = 0
-                if tx_handler:
-                    balance = await tx_handler.client.get_token_balance(Pubkey.from_string(address))
-                    if not balance:
-                        append = False
-                    balance *= priceUsd
-                if append:
-                    ans.append((address, market_cap, token_name, token_symbol, balance))
-            except (KeyError, TypeError) as e:
-                traceback.print_exc()
-                logger.error(f"Error extracting token info for {mint}: {e}")
+                        if lamports > 0:
+                            mints_with_balance.append(mint)
 
-        return ans
+                    except KeyError:
+                        continue  # Если нет нужных ключей, пропускаем
+
+                return mints_with_balance
+
+            # Извлекаем все mint'ы с ненулевым балансом
+            token_addresses = get_mints_with_balance(data)
+            print("Токены с ненулевым балансом:", token_addresses)
+            
+            token_tasks = []
+            for token_address in token_addresses:
+                # Создаем асинхронную задачу для получения информации о токене
+                token_tasks.append(self.token_info(token_address))
+            mints = []
+            # Запрашиваем всю информацию о токенах параллельно
+            token_infos = await asyncio.gather(*token_tasks, return_exceptions=True)
+            for mint, ti in zip(token_addresses, token_infos):
+                if isinstance(ti, Exception):
+                    logger.error(f"Skipping token {mint} due to token_info fetch error: {ti}")
+                    continue
+
+                if not isinstance(ti, dict) or "baseToken" not in ti:
+                    logger.error(f"Skipping token {mint} due to unexpected token_info format: {ti}")
+                    continue
+
+                try:
+                    token_name = ti["baseToken"].get("name", "Unknown")
+                    token_symbol = ti["baseToken"].get("symbol", "Unknown")
+                    address = ti["baseToken"].get("address")
+                    market_cap = ti.get("marketCap", 0)
+                    priceUsd = float(ti.get("priceUsd"))
+                    print(address)
+                    append = True
+                    balance = 0
+                    if tx_handler:
+                        balance = await tx_handler.client.get_token_balance(Pubkey.from_string(address))
+                        if not balance:
+                            append = False
+                        balance *= priceUsd
+                    if append:
+                        mints.append((address, market_cap, token_name, token_symbol, balance))
+                except (KeyError, TypeError) as e:
+                    traceback.print_exc()
+                    logger.error(f"Error extracting token info for {mint}: {e}")
+
+            return mints
 
 
 def check_mint(account: Pubkey) -> bool:
