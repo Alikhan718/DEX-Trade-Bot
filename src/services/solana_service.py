@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 class SolanaService:
     def __init__(self):
         """Initialize Solana service"""
-        self.rpc_urls = Config.SOLANA_RPC_URLS
         self.current_rpc_url = Config.SOLANA_RPC_URL
         api_key = os.getenv('API_KEY')
         if api_key:

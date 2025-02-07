@@ -109,7 +109,7 @@ global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
     """Send request with both per-client and global rate limiting"""
     max_retries = 5
-    base_delay = 0.5
+    base_delay = 0.1
 
     for attempt in range(max_retries):
         try:

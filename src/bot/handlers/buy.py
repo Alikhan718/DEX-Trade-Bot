@@ -17,7 +17,7 @@ from src.services.token_info import TokenInfoService
 from src.database.models import User, LimitOrder, Trade, TransactionType, ReferralRecords
 from .start import get_real_user_id
 from src.solana_module.transaction_handler import UserTransactionHandler
-from src.bot.states import BuyStates, AutoBuySettingsStates, LimitBuyStates
+from src.bot.states import BuyStates, AutoBuySettingsStates, LimitBuyStates, SellStates
 from solders.pubkey import Pubkey
 from src.solana_module.utils import get_bonding_curve_address
 from ..crud import get_user_setting, update_user_setting
@@ -881,6 +881,10 @@ async def handle_custom_amount(callback_query: types.CallbackQuery, state: FSMCo
 async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle preset amount buttons"""
     try:
+        # Skip if this is a buy_token_ callback
+        if callback_query.data.startswith("buy_token_"):
+            return
+            
         # Extract amount from callback data
         amount = callback_query.data.split('_')[1]
         if amount == "custom":
@@ -1463,8 +1467,52 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             logger.warning(f"User not found for auto-buy: {user_id}")
             return
 
+        # Проверяем включен ли автобай
         if not (await get_user_setting(user_id, 'auto_buy', session))['enabled']:
-            logger.warning(f"User not enabled: {user_id}")
+            logger.warning(f"Auto-buy is disabled for user: {user_id} Starting showing token info")
+            # Если автобай выключен, показываем меню с информацией о токене
+            client = solana_service.create_client(user.private_key)
+            token_balance = await client.get_token_balance(Pubkey.from_string(token_address))
+            
+            # Получаем информацию о токене
+            token_info = await token_info_service.get_token_info(token_address)
+            if not token_info:
+                await message.reply("❌ Не удалось получить информацию о токене")
+                return
+
+            # Форматируем сообщение с информацией о токене
+            message_text = (
+                f"💎 {token_info.symbol} ({token_info.name})\n"
+                f"💵 Цена: ${_format_price(token_info.price_usd)}\n"
+                f"💰 Market Cap: ${_format_price(token_info.market_cap)}\n"
+                f"📍 Адрес: <code>{token_address}</code>\n"
+            )
+
+            # Создаем клавиатуру с кнопками купить/продать
+            keyboard = []
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🟢 Купить {token_info.symbol}",
+                    callback_data=f"buy_token_{token_address}"
+                )
+            ])
+            
+            # Добавляем кнопку продажи только если есть баланс токена
+            if token_balance > 0:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        text=f"🔴 Продать {token_info.symbol}",
+                        callback_data=f"sell_token_{token_address}"
+                    )
+                ])
+            
+            keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
+
+            await message.reply(
+                message_text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+                parse_mode="HTML"
+            )
             return
 
         # Получаем баланс кошелька для проверки
@@ -1740,3 +1788,58 @@ async def cancel_limit_order(callback_query: types.CallbackQuery, session: Async
     except Exception as e:
         logger.error(f"Error cancelling limit order: {e}")
         await callback_query.answer("❌ Произошла ошибка при отмене ордера")
+
+@router.callback_query(lambda c: c.data.startswith("buy_token_"), flags={"priority": 3})
+async def handle_buy_token_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Обработчик кнопки покупки токена"""
+    try:
+        token_address = callback_query.data.replace("buy_token_", "")
+        
+        # Устанавливаем состояние и сохраняем адрес токена
+        await state.set_state(BuyStates.waiting_for_amount)
+        await state.update_data(token_address=token_address)
+        
+        # Показываем меню покупки
+        await show_buy_menu(callback_query.message, state, session)
+        
+    except Exception as e:
+        logger.error(f"Error handling buy token button: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ])
+        )
+
+@router.callback_query(lambda c: c.data.startswith("sell_token_"), flags={"priority": 3})
+async def handle_sell_token_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Обработчик кнопки продажи токена"""
+    try:
+        token_address = callback_query.data.replace("sell_token_", "")
+        
+        # Получаем информацию о пользователе
+        user_id = get_real_user_id(callback_query)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+        
+        if not user:
+            await callback_query.answer("❌ Пользователь не найден")
+            return
+            
+        # Устанавливаем состояние и сохраняем адрес токена
+        await state.set_state(SellStates.waiting_for_percentage)
+        await state.update_data(token_address=token_address)
+        
+        # Показываем меню продажи
+        from src.bot.handlers.sell import show_sell_menu
+        await show_sell_menu(callback_query.message, state, session)
+        
+    except Exception as e:
+        logger.error(f"Error handling sell token button: {e}")
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ])
+        )
