@@ -1,4 +1,5 @@
 from decimal import Decimal
+import os
 from typing import Dict, Tuple, NamedTuple
 import json
 from solders.signature import Signature
@@ -100,7 +101,7 @@ def analyze_transaction(tx_data: GetTransactionResp) -> None:
 def swap_type(signature: str) -> str:
     sig = Signature.from_string(signature)
     # Sample transaction data would go here
-    client = Client('https://api.mainnet-beta.solana.com')
+    client = Client(os.getenv(f"SOLANA_RPC_URL") + f"/?api-key={os.getenv('API_KEY')}")
     tx_data = client.get_transaction(sig, max_supported_transaction_version=0)
     print("[SWAP] tx_data: ", tx_data)
     try:

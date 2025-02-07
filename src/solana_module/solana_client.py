@@ -92,8 +92,8 @@ class RateLimiter:
                     self.calls.pop(0)
                 else:
                     wait_time = self.period - (current - self.calls[0])
-                    logger.info(f"Rate limiter active. Sleeping for {wait_time:.2f} seconds.")
-                    await asyncio.sleep(wait_time)
+                    # logger.info(f"Rate limiter active. Sleeping for {wait_time:.2f} seconds.")
+                    # await asyncio.sleep(wait_time)
                     current = time.monotonic()
             self.calls.append(current)
             logger.debug(f"Current call count: {len(self.calls)} within {self.period} seconds.")
@@ -109,7 +109,7 @@ global_rate_limiter = RateLimiter(max_calls=5, period=1.0)
 async def send_request_with_rate_limit(client: AsyncClient, request_func, *args, **kwargs):
     """Send request with both per-client and global rate limiting"""
     max_retries = 5
-    base_delay = 0.1
+    base_delay = 0
 
     for attempt in range(max_retries):
         try:
