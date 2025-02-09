@@ -113,17 +113,9 @@ async def send_request_with_rate_limit(client: AsyncClient, request_func, *args,
 
     for attempt in range(max_retries):
         try:
-            await rate_limiter.acquire()
-            await global_rate_limiter.acquire()
             return await request_func(*args, **kwargs)
         except Exception as e:
-            if not is_rate_limit_error(e) or attempt == max_retries - 1:
-                raise
-
-            # Exponential backoff
-            delay = base_delay * (2 ** attempt)
-            logger.info(f"Rate limit hit, retrying in {delay:.2f} seconds...")
-            await asyncio.sleep(delay)
+            continue
 
     raise Exception("Failed after max retries")
 
@@ -363,7 +355,6 @@ class SolanaClient:
                                                               [signature])
                 if not response.value or not response.value[0]:
                     logger.info("Signature status not found. Retrying...")
-                    await asyncio.sleep(retry_delay)
                     continue
 
                 signature_status = response.value[0]
