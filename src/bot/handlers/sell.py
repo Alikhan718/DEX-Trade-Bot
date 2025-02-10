@@ -425,31 +425,31 @@ async def handle_confirm_sell(callback_query: types.CallbackQuery, state: FSMCon
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
                 ])
             )
-            trade = Trade(
-                user_id=user.id,
-                token_address=str(token_address),
-                amount=amount_tokens,
-                price_usd=current_price_sol,
-                amount_sol=amount_tokens * current_price_sol,
-                created_at=datetime.now(),
-                transaction_type=1,
-                status="SUCCESS",
-                gas_fee=sell_settings['gas_fee'],
-                transaction_hash=str(tx_signature),
-            )
-            session.add(trade)
-            await session.commit()
-            if user.referral_id:
-                logger.info("User has referral")
-                ref_record = ReferralRecords(
-                    user_id=user.referral_id,
-                    trade_id=trade.id or None,
-                    amount_sol=amount_tokens * current_price_sol * 0.005,
-                    created_at=datetime.now(),
-                    is_sent=False
-                )
-                session.add(ref_record)
-                await session.commit()
+            # trade = Trade(
+            #     user_id=user.id,
+            #     token_address=str(token_address),
+            #     amount=amount_tokens,
+            #     price_usd=current_price_sol,
+            #     amount_sol=amount_tokens * current_price_sol,
+            #     created_at=datetime.now(),
+            #     transaction_type=1,
+            #     status="SUCCESS",
+            #     gas_fee=sell_settings['gas_fee'],
+            #     transaction_hash=str(tx_signature),
+            # )
+            # session.add(trade)
+            # await session.commit()
+            # if user.referral_id:
+            #     logger.info("User has referral")
+            #     ref_record = ReferralRecords(
+            #         user_id=user.referral_id,
+            #         trade_id=trade.id or None,
+            #         amount_sol=amount_tokens * current_price_sol * 0.005,
+            #         created_at=datetime.now(),
+            #         is_sent=False
+            #     )
+            #     session.add(ref_record)
+            #     await session.commit()
         else:
             logger.error("Sell transaction failed: No signature returned")
             # Update error message

@@ -417,30 +417,30 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="main_menu")]
                 ])
             )
-            trade = Trade(
-                user_id=user.id,
-                token_address=token_address,
-                amount=token_amount,
-                price_usd=token_info.price_usd if token_info and token_info.price_usd else -1.0,
-                amount_sol=amount_sol,
-                created_at=datetime.now(),
-                transaction_type=0,
-                status="SUCCESS",
-                gas_fee=buy_settings['gas_fee'],
-                transaction_hash=str(tx_signature),
-            )
-            session.add(trade)
-            await session.commit()
-            if user.referral_id:
-                ref_record = ReferralRecords(
-                    user_id=user.referral_id,
-                    trade_id=trade.id or None,
-                    amount_sol=amount_sol * 0.005,
-                    created_at=datetime.now(),
-                    is_sent=False
-                )
-                session.add(ref_record)
-                await session.commit()
+            # trade = Trade(
+            #     user_id=user.id,
+            #     token_address=token_address,
+            #     amount=token_amount,
+            #     price_usd=token_info.price_usd if token_info and token_info.price_usd else -1.0,
+            #     amount_sol=amount_sol,
+            #     created_at=datetime.now(),
+            #     transaction_type=0,
+            #     status="SUCCESS",
+            #     gas_fee=buy_settings['gas_fee'],
+            #     transaction_hash=str(tx_signature),
+            # )
+            # session.add(trade)
+            # await session.commit()
+            # if user.referral_id:
+            #     ref_record = ReferralRecords(
+            #         user_id=user.referral_id,
+            #         trade_id=trade.id or None,
+            #         amount_sol=amount_sol * 0.005,
+            #         created_at=datetime.now(),
+            #         is_sent=False
+            #     )
+            #     session.add(ref_record)
+            #     await session.commit()
         else:
             logger.error("Buy transaction failed")
             # Update error message
@@ -1602,31 +1602,31 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
                 if is_buy else
                 f"💰 Продано: {_format_price(token_amount)} токенов"
             )
-            trade = Trade(
-                user_id=user.id,
-                token_address=token_address,
-                amount=token_amount,
-                price_usd=token_info.price_usd if token_info and token_info.price_usd else -1.0,
-                amount_sol=amount_sol,
-                created_at=datetime.now(),
-                transaction_type=(0 if is_buy else 1),
-                status="SUCCESS",
-                gas_fee=settings['gas_fee'],
-                transaction_hash=str(tx_signature),
-            )
-            session.add(trade)
-            await session.commit()
-            if user.referral_id:
-                logger.info("User has referral")
-                ref_record = ReferralRecords(
-                    user_id=user.referral_id,
-                    trade_id=trade.id or None,
-                    amount_sol=amount_sol * 0.005,
-                    created_at=datetime.now(),
-                    is_sent=False
-                )
-                session.add(ref_record)
-                await session.commit()
+            # trade = Trade(
+            #     user_id=user.id,
+            #     token_address=token_address,
+            #     amount=token_amount,
+            #     price_usd=token_info.price_usd if token_info and token_info.price_usd else -1.0,
+            #     amount_sol=amount_sol,
+            #     created_at=datetime.now(),
+            #     transaction_type=(0 if is_buy else 1),
+            #     status="SUCCESS",
+            #     gas_fee=settings['gas_fee'],
+            #     transaction_hash=str(tx_signature),
+            # )
+            # session.add(trade)
+            # await session.commit()
+            # if user.referral_id:
+            #     logger.info("User has referral")
+            #     ref_record = ReferralRecords(
+            #         user_id=user.referral_id,
+            #         trade_id=trade.id or None,
+            #         amount_sol=amount_sol * 0.005,
+            #         created_at=datetime.now(),
+            #         is_sent=False
+            #     )
+            #     session.add(ref_record)
+            #     await session.commit()
             await status_message.edit_text(
                 f"✅ Токен успешно {'Куплен' if is_buy else 'Продан'}!\n\n"
                 f"🪙 Токен: {token_info.symbol if token_info else 'Unknown'} {token_info.name if token_info else ''}\n"
