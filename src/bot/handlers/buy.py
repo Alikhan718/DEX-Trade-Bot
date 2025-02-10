@@ -403,7 +403,7 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
 
             # Calculate token amount from SOL amount and price
             token_amount = amount_sol / token_price_sol
-
+            logger.info(f"Amount sol: {amount_sol} \nToken Price Sol: {token_price_sol} \nToken amount:{token_amount}")
             # Update success message
             await status_message.edit_text(
                 "✅ Токен успешно куплен!\n\n"
@@ -877,12 +877,13 @@ async def handle_custom_amount(callback_query: types.CallbackQuery, state: FSMCo
         )
 
 
-@router.callback_query(lambda c: c.data.startswith("buy"))
+@router.callback_query(lambda c: c.data.startswith("buy") and "token" not in c.data, flags={"priority": 3})
 async def handle_preset_amount(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
     """Handle preset amount buttons"""
     try:
         # Skip if this is a buy_token_ callback
         if callback_query.data.startswith("buy_token_"):
+            logger.info("Ignoring buy_token")
             return
             
         # Extract amount from callback data
@@ -1502,7 +1503,7 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
                 keyboard.append([
                     InlineKeyboardButton(
                         text=f"🔴 Продать {token_info.symbol}",
-                        callback_data=f"sell_token_{token_address}"
+                        callback_data=f"select_token_{token_address}"
                     )
                 ])
             
@@ -1789,18 +1790,46 @@ async def cancel_limit_order(callback_query: types.CallbackQuery, session: Async
         logger.error(f"Error cancelling limit order: {e}")
         await callback_query.answer("❌ Произошла ошибка при отмене ордера")
 
-@router.callback_query(lambda c: c.data.startswith("buy_token_"), flags={"priority": 3})
-async def handle_buy_token_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+@router.callback_query(lambda c: c.data.startswith("buy_token_"), flags={"priority": 5})
+async def handle_buy_token_button(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession, solana_service: SolanaService):
     """Обработчик кнопки покупки токена"""
     try:
         token_address = callback_query.data.replace("buy_token_", "")
         
-        # Устанавливаем состояние и сохраняем адрес токена
-        await state.set_state(BuyStates.waiting_for_amount)
-        await state.update_data(token_address=token_address)
-        
-        # Показываем меню покупки
-        await show_buy_menu(callback_query.message, state, session)
+        # Get user info
+        user_id = get_real_user_id(callback_query)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
+
+        if not user:
+            await callback_query.reply("❌ Пользователь не найден")
+            return
+
+        # Get token info
+        token_info = await token_info_service.get_token_info(token_address)
+        if not token_info:
+            await callback_query.reply(
+                "❌ Не удалось получить информацию о токене\n"
+                "Пожалуйста, проверьте адрес и попробуйте снова"
+            )
+            return
+
+        # Get wallet balance
+        balance = await solana_service.get_wallet_balance(user.solana_wallet)
+        sol_price = await solana_service.get_sol_price()
+        usd_balance = balance * sol_price
+        settings = await get_user_setting(user_id, 'buy', session)
+        # Save token address and initial slippage to state
+        await state.update_data({
+            'token_address': token_address,
+            'slippage': settings['slippage'] if 'slippage' in settings else 1.0,
+            'gas_fee': settings['gas_fee'] if 'gas_fee' in settings else None,
+            'balance': balance,
+            'sol_price': sol_price,
+            'usd_balance': usd_balance,
+        })
+        await show_buy_menu(callback_query.message, state, session, user_id)
         
     except Exception as e:
         logger.error(f"Error handling buy token button: {e}")
