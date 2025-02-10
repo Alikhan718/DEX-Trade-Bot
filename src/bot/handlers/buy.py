@@ -395,7 +395,8 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         tx_signature = await tx_handler.buy_token(
             token_address=token_address,
             amount_sol=amount_sol,
-            slippage=slippage
+            slippage=slippage,
+            user=user
         )
 
         if tx_signature:
@@ -1584,7 +1585,8 @@ async def handle_auto_buy(message: types.Message, state: FSMContext, session: As
             tx_signature = await tx_handler.buy_token(
                 token_address=token_address,
                 amount_sol=amount_sol,
-                slippage=slippage
+                slippage=slippage,
+                user=user
             )
         else:
             tx_signature = await tx_handler.sell_token(

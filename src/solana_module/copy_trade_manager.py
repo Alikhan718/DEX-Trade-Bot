@@ -449,7 +449,8 @@ class CopyTradeManager:
                                 result = await th.buy_token(
                                     token_address=mint,
                                     amount_sol=copy_amount,
-                                    slippage=trade.buy_slippage  # Convert percentage to decimal
+                                    slippage=trade.buy_slippage,  # Convert percentage to decimal
+                                    user=user
                                 )
                             else:  # SELL
                                 result = await th.sell_token(
