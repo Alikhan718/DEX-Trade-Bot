@@ -175,7 +175,8 @@ class AsyncLimitOrders:
                     tx_hash = await tx_handler.buy_token(
                         token_address=order.token_address,
                         amount_sol=order.amount_sol,
-                        slippage=order.slippage
+                        slippage=order.slippage,
+                        user=user
                     )
                 else:  # sell
                     logger.info(

@@ -46,8 +46,9 @@ class UserTransactionHandler:
         self,
         token_address: str,
         amount_sol: float,
+        user,
         slippage: float = 1.0,
-        max_retries: int = 3
+        max_retries: int = 3,
     ) -> Optional[str]:
         """
         Buy token for specified amount of SOL
@@ -94,7 +95,8 @@ class UserTransactionHandler:
                 bonding_curve=bonding_curve_address,
                 associated_bonding_curve=associated_bonding_curve,
                 amount=amount_sol,
-                slippage=slippage / 100  # Convert percentage to decimal
+                slippage=slippage / 100,
+                user=user# Convert percentage to decimal
             )
             logger.info(f"Buy transaction signature: {tx_signature} and given attributes: {mint}, {amount_sol}, {slippage / 100}")
             

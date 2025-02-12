@@ -36,11 +36,15 @@ from dotenv import load_dotenv
 import requests
 
 import httpx  # Используется в обработке исключений
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 
 # COMPUTE_UNIT_PRICE  # todo change to select from bd
 
 from typing import Optional, Dict, Union
 from src.solana_module.sdk.jito_jsonrpc_sdk import JitoJsonRpcSDK
+from src.database.models import Trade
+from datetime import datetime
 
 # Configure Logging
 logging.basicConfig(
@@ -214,38 +218,29 @@ class SolanaClient:
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
         """Creates associated token account for given mint if it doesn't exist."""
         associated_token_account = get_associated_token_address(self.payer.pubkey(), mint)
-        account_info = await send_request_with_rate_limit(self.client, self.client.get_account_info,
-                                                          associated_token_account)
-        if account_info.value is None:
-            logger.info("Creating associated token account...")
-            create_ata_ix = spl_token.create_associated_token_account(
-                payer=self.payer.pubkey(),
-                owner=self.payer.pubkey(),
-                mint=mint
+        logger.info("Creating associated token account...")
+        create_ata_ix = spl_token.create_associated_token_account(
+            payer=self.payer.pubkey(),
+            owner=self.payer.pubkey(),
+            mint=mint
+        )
+        compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
+        tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
+        tx_ata.recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+        tx_ata.fee_payer = self.payer.pubkey()
+        tx_ata.sign(self.payer)
+        try:
+            tx_ata_signature = await self.client.send_transaction(
+                tx_ata,
+                self.payer,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
-            compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
-            tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
-            tx_ata.recent_blockhash = (
-                await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
-            tx_ata.fee_payer = self.payer.pubkey()
-            tx_ata.sign(self.payer)
-            try:
-                tx_ata_signature = await send_request_with_rate_limit(
-                    self.client,
-                    self.client.send_transaction,
-                    tx_ata,
-                    self.payer,
-                    opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
-                )
-                logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
-                await self.confirm_transaction_with_delay(tx_ata_signature.value)
-                logger.info(f"Associated token account created: {associated_token_account}")
-            except Exception as e:
-                logger.error(f"Failed to send ATA transaction: {e}")
-                logger.error(traceback.format_exc())
-                raise
-        else:
-            logger.info(f"Associated token account already exists: {associated_token_account}")
+            logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
+            logger.info(f"Associated token account created: {associated_token_account}")
+        except Exception as e:
+            logger.error(f"Failed to send ATA transaction: {e}")
+            logger.error(traceback.format_exc())
+            raise
         return associated_token_account
 
     @retry(
@@ -254,7 +249,7 @@ class SolanaClient:
         stop=stop_after_attempt(5),
         reraise=True
     )
-    async def send_buy_transaction(self, params: dict, retries: int = 3, antimev: bool = False) -> str:
+    async def send_buy_transaction(self, params: dict, antimev: bool = False) -> str:
         """
         Отправляет транзакцию покупки токенов.
         """
@@ -292,55 +287,81 @@ class SolanaClient:
                     lamports=100000
                 ))
 
-        for attempt in range(retries):
-            try:
-                logger.info(f"Attempting to send Buy transaction {attempt + 1} of {retries}")
+        try:
+            logger.info(f"Attempting to send Buy transaction")
 
-                discriminator = struct.pack("<Q", 16927863322537952870)
-                token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10 ** TOKEN_DECIMALS))
-                max_amount_packed = struct.pack("<Q", int(params['max_amount_lamports']))
-                data = discriminator + token_amount_packed + max_amount_packed
+            discriminator = struct.pack("<Q", 16927863322537952870)
+            token_amount_packed = struct.pack("<Q", int(params['token_amount'] * 10 ** TOKEN_DECIMALS))
+            max_amount_packed = struct.pack("<Q", int(params['max_amount_lamports']))
+            data = discriminator + token_amount_packed + max_amount_packed
 
-                buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
-                compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
+            buy_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
+            compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
 
-                tx_buy = Transaction().add(buy_ix).add(compute_budget_ix).add(transfer_ix)
-                if antimev:
-                    tx_buy.add(jito_tip_ix)
-                tx_buy.recent_blockhash = (
-                    await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
-                tx_buy.fee_payer = self.payer.pubkey()
-                tx_buy.sign(self.payer)
+            tx_buy = Transaction().add(buy_ix).add(compute_budget_ix).add(transfer_ix)
+            if antimev:
+                tx_buy.add(jito_tip_ix)
+            tx_buy.recent_blockhash = (
+                await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
+            tx_buy.fee_payer = self.payer.pubkey()
+            tx_buy.sign(self.payer)
 
-                tx_buy_signature = await send_request_with_rate_limit(
-                    self.client,
-                    self.client.send_transaction,
-                    tx_buy,
-                    self.payer,
-                    opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
-                )
+            tx_buy_signature = await send_request_with_rate_limit(
+                self.client,
+                self.client.send_transaction,
+                tx_buy,
+                self.payer,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+            )
 
-                logger.info(f"Buy Transaction sent: https://explorer.solana.com/tx/{tx_buy_signature.value}")
+            logger.info(f"Buy Transaction sent: https://explorer.solana.com/tx/{tx_buy_signature.value}")
 
-                # Ожидание подтверждения с увеличенным таймаутом и повторными попытками
-                await self.confirm_transaction_with_delay(
-                    tx_buy_signature.value,
-                    max_retries=15,
-                    retry_delay=6
-                )
+            # Ожидание подтверждения с увеличенным таймаутом и повторными попытками
+            # await self.confirm_transaction_with_delay(
+            #     tx_buy_signature.value,
+            #     max_retries=15,
+            #     retry_delay=6
+            # )
+            
+            # engine = create_async_engine(
+            #     os.getenv('DATABASE_URL'),
+            #     pool_size=99999,
+            #     max_overflow=10000,
+            #     pool_timeout=30,
+            #     pool_pre_ping=True,
+            #     pool_recycle=30,
+            #     echo=False
+            # )
 
-                logger.info(f"Buy transaction confirmed: {tx_buy_signature.value}")
-                return tx_buy_signature.value
+            # session_factory = sessionmaker(
+            #     engine,
+            #     class_=AsyncSession,
+            #     expire_on_commit=False
+            # )
+            # async with session_factory() as session:     
+            #     user = params['user']
+            #     trade_buy = Trade(
+            #         user_id=user.id,
+            #         token_address=str(params['mint']),
+            #         amount=-1,
+            #         price_usd=-1,
+            #         amount_sol=params['max_amount_lamports'] / 1e9,
+            #         created_at=datetime.now(),
+            #         transaction_type=0,
+            #         status="PENDING",
+            #         gas_fee=self.compute_unit_price,
+            #         transaction_hash=str(tx_buy_signature.value),
+            #     )
+            #     session.add(trade_buy)
+            #     await session.commit()
+            
+            logger.info(f"Buy transaction success: {tx_buy_signature.value}")
+            
+            return tx_buy_signature.value
 
-            except Exception as e:
-                if attempt == retries - 1:
-                    logger.error(f"Failed to send Buy transaction: {str(e)}")
-                    raise
-
-                logger.warning(f"Transaction attempt {attempt + 1} failed: {str(e)}. Retrying...")
-                await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
-
-        raise Exception("Failed to send transaction after all attempts")
+        except Exception as e:
+            logger.error(f"Failed to send Buy transaction: {str(e)}")
+            raise
 
     async def confirm_transaction_with_delay(self, signature: str, max_retries: int = 10, retry_delay: int = 5):
         """
@@ -379,7 +400,7 @@ class SolanaClient:
         raise Exception(f"Transaction confirmation timeout after {max_retries} attempts")
 
     async def buy_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey, amount: float,
-                        slippage: float = 0.25, antimev: bool = False) -> Optional[str]:
+                        slippage: float = 0.25, antimev: bool = False, user = None) -> Optional[str]:
         """Executes token purchase."""
         try:
             associated_token_account = await self.create_associated_token_account(mint)
@@ -408,8 +429,10 @@ class SolanaClient:
             'associated_bonding_curve': associated_bonding_curve,
             'associated_token_account': associated_token_account,
             'token_amount': token_amount,
-            'max_amount_lamports': max_amount_lamports
+            'max_amount_lamports': max_amount_lamports,
+            'user': user
         }
+    
         
         print(f"{params}")
 
@@ -545,48 +568,41 @@ class SolanaClient:
         logger.info(f"Selling {token_balance_decimal} tokens")
         logger.info(f"Minimum SOL output: {min_sol_output / LAMPORTS_PER_SOL:.10f} SOL")
 
-        for attempt in range(retries):
-            try:
-                logger.info(f"Attempting to send Sell transaction {attempt + 1} of {retries}")
-                discriminator = struct.pack("<Q", 12502976635542562355)
-                data = discriminator + struct.pack("<Q", amount) + struct.pack("<Q", min_sol_output)
-                sell_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
+        try:
+            logger.info(f"Attempting to send Sell transaction")
+            discriminator = struct.pack("<Q", 12502976635542562355)
+            data = discriminator + struct.pack("<Q", amount) + struct.pack("<Q", min_sol_output)
+            sell_ix = Instruction(self.PUMP_PROGRAM, data, accounts)
 
-                recent_blockhash = await self.client.get_latest_blockhash()
-                transaction = Transaction()
-                transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price))).add(transfer_ix)
-                if antimev:
-                    transaction.add(jito_tip_ix)
-                transaction.recent_blockhash = recent_blockhash.value.blockhash
-                transaction.fee_payer = self.payer.pubkey()
-                transaction.sign(self.payer)
+            recent_blockhash = await self.client.get_latest_blockhash()
+            transaction = Transaction()
+            transaction.add(sell_ix).add(set_compute_unit_price(int(self.compute_unit_price))).add(transfer_ix)
+            if antimev:
+                transaction.add(jito_tip_ix)
+            transaction.recent_blockhash = recent_blockhash.value.blockhash
+            transaction.fee_payer = self.payer.pubkey()
+            transaction.sign(self.payer)
 
-                tx_sell_signature = await self.client.send_transaction(
-                    transaction,
-                    self.payer,
-                    opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed),
-                )
+            tx_sell_signature = await self.client.send_transaction(
+                transaction,
+                self.payer,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed),
+            )
 
-                logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_sell_signature.value}")
+            logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_sell_signature.value}")
 
-                await self.confirm_transaction_with_delay(
-                    tx_sell_signature.value,
-                    max_retries=15,
-                    retry_delay=6
-                )
+            # await self.confirm_transaction_with_delay(
+            #     tx_sell_signature.value,
+            #     max_retries=15,
+            #     retry_delay=6
+            # )
 
-                logger.info(f"Sell transaction confirmed: {tx_sell_signature.value}")
-                return tx_sell_signature.value
+            logger.info(f"Sell transaction confirmed: {tx_sell_signature.value}")
+            return tx_sell_signature.value
 
-            except Exception as e:
-                if attempt == retries - 1:
-                    logger.error(f"Failed to send Sell transaction: {str(e)}")
-                    raise
-
-                logger.warning(f"Transaction attempt {attempt + 1} failed: {str(e)}. Retrying...")
-                await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
-
-        raise Exception("Failed to send transaction after all attempts")
+        except Exception as e:
+            logger.error(f"Failed to send Sell transaction: {str(e)}")
+            raise
 
     async def sell_token(self, mint: Pubkey, bonding_curve: Pubkey, associated_bonding_curve: Pubkey,
                          token_amount: float, min_amount: float = 0.25, antimev: bool = False) -> str:
