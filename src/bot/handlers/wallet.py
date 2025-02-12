@@ -70,6 +70,9 @@ async def on_wallet_menu_button(callback_query: types.CallbackQuery, session: As
                 InlineKeyboardButton(text="🔑 Показать приватный ключ", callback_data="show_private_key"),
                 InlineKeyboardButton(text="📥 Импортировать кошелек", callback_data="import_wallet")
             ],
+            [
+                InlineKeyboardButton(text="💸 Вывод средств", callback_data="withdraw")
+            ],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
         ])
 

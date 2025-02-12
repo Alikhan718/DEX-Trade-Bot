@@ -90,17 +90,23 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
                                      callback_data="edit_sell_slippage")
             ]
 
-        # Создаем список кнопок, распределяя их по строкам
-        buttonRows = []
-        max_len = max(len(buy_settings_keyboard), len(sell_settings_keyboard))
-        # for i in range(max_len):
-        #     row = []
+        # Формируем список кнопок
+        buttonRows = [
+            # Первая строка - Автобай/Автоселл
+            [
+                InlineKeyboardButton(text="⚡️ Автобай / Автоселл", callback_data="auto_buy_settings")
+            ]
+        ]
+
+        # Добавляем кнопки настроек покупки
         if len(buy_settings_keyboard):
-            buttonRows += buy_settings_keyboard
+            for btn in buy_settings_keyboard:
+                buttonRows.append([btn])
+
+        # Добавляем кнопки настроек продажи
         if len(sell_settings_keyboard):
-            buttonRows += sell_settings_keyboard
-        buttonRows = [[btn] for btn in buttonRows]
-        # buttonRows.append(row)
+            for btn in sell_settings_keyboard:
+                buttonRows.append([btn])
 
         # Определение состояния Anti MEV
         anti_mev_text = '🟢 Anti MEV' if settings_dict.get('anti_mev', False) else '🔴 Anti MEV'
@@ -109,7 +115,7 @@ async def show_settings_menu(update: Union[types.Message, types.CallbackQuery], 
         # Формирование клавиатуры
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=
-            buttonRows +  # Добавляем кнопки покупки и продажи
+            buttonRows +  # Добавляем все кнопки настроек
             [
                 [anti_mev_button],  # Кнопка Anti MEV
                 [

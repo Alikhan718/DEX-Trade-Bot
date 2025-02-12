@@ -27,10 +27,6 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🟢 Купить", callback_data="buy"),
         InlineKeyboardButton(text="🔴 Продать", callback_data="sell")
     ],
-    # Auto-buy settings
-    [
-        InlineKeyboardButton(text="⚡️ Автобай / Автоселл", callback_data="auto_buy_settings")
-    ],
     # Trading features
     [
         InlineKeyboardButton(text="👥 Copy Trade", callback_data="copy_trade"),
@@ -45,10 +41,6 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text="🛡️ Проверка на скам", callback_data="rugcheck"),
         InlineKeyboardButton(text="💼 Кошелек", callback_data="wallet_menu")
-    ],
-    # Withdraw
-    [
-        InlineKeyboardButton(text="💸 Вывод средств", callback_data="withdraw")
     ],
     # Settings and help
     [
