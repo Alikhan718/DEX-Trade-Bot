@@ -218,38 +218,29 @@ class SolanaClient:
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
         """Creates associated token account for given mint if it doesn't exist."""
         associated_token_account = get_associated_token_address(self.payer.pubkey(), mint)
-        account_info = await send_request_with_rate_limit(self.client, self.client.get_account_info,
-                                                          associated_token_account)
-        if account_info.value is None:
-            logger.info("Creating associated token account...")
-            create_ata_ix = spl_token.create_associated_token_account(
-                payer=self.payer.pubkey(),
-                owner=self.payer.pubkey(),
-                mint=mint
+        logger.info("Creating associated token account...")
+        create_ata_ix = spl_token.create_associated_token_account(
+            payer=self.payer.pubkey(),
+            owner=self.payer.pubkey(),
+            mint=mint
+        )
+        compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
+        tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
+        tx_ata.recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+        tx_ata.fee_payer = self.payer.pubkey()
+        tx_ata.sign(self.payer)
+        try:
+            tx_ata_signature = await self.client.send_transaction(
+                tx_ata,
+                self.payer,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
-            compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
-            tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
-            tx_ata.recent_blockhash = (
-                await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
-            tx_ata.fee_payer = self.payer.pubkey()
-            tx_ata.sign(self.payer)
-            try:
-                tx_ata_signature = await send_request_with_rate_limit(
-                    self.client,
-                    self.client.send_transaction,
-                    tx_ata,
-                    self.payer,
-                    opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
-                )
-                logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
-                await self.confirm_transaction_with_delay(tx_ata_signature.value)
-                logger.info(f"Associated token account created: {associated_token_account}")
-            except Exception as e:
-                logger.error(f"Failed to send ATA transaction: {e}")
-                logger.error(traceback.format_exc())
-                raise
-        else:
-            logger.info(f"Associated token account already exists: {associated_token_account}")
+            logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
+            logger.info(f"Associated token account created: {associated_token_account}")
+        except Exception as e:
+            logger.error(f"Failed to send ATA transaction: {e}")
+            logger.error(traceback.format_exc())
+            raise
         return associated_token_account
 
     @retry(
@@ -320,7 +311,7 @@ class SolanaClient:
                 self.client.send_transaction,
                 tx_buy,
                 self.payer,
-                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
             )
 
             logger.info(f"Buy Transaction sent: https://explorer.solana.com/tx/{tx_buy_signature.value}")
