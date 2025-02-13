@@ -22,6 +22,8 @@ from .buy import _format_price
 from .start import get_real_user_id
 from src.bot.states import WalletStates
 
+import base58
+
 logger = logging.getLogger(__name__)
 
 router = Router()
@@ -168,8 +170,8 @@ async def on_import_wallet_button(callback_query: types.CallbackQuery, state: FS
     try:
         await callback_query.message.answer(
             "🔑 Импорт кошелька\n\n"
-            "Отправьте приватный ключ в формате массива чисел.\n"
-            "Например: 124,232,72,36,252,17,98,94,...\n\n"
+            "Отправьте приватный ключ в формате base58.\n"
+            "Пример: 4dmKkXNHJmR1XNprLmLodE47eWnbnZAiBrxPATqjyUC3s1otoaqBBYi3bexHnEYzMYjE5GgQPQvKdHXk9KwvXWpw\n\n"
             "⚠️ ВНИМАНИЕ: Никогда не делитесь своим приватным ключом!\n"
             "Импортируйте кошелек только из надежных источников.",
             reply_markup=ForceReply(selective=True)
@@ -186,46 +188,29 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
     try:
         private_key_str = message.text.strip()
         logger.info("[WALLET] Starting private key validation")
-        logger.debug(f"[WALLET] Private key string length: {len(private_key_str)}")
-
+        
         # Validate and convert private key
         try:
-            # Split and convert to integers
-            key_parts = private_key_str.split(',')
-            logger.debug(f"[WALLET] Split private key into {len(key_parts)} parts")
+            # Decode base58 string to bytes
+            key_bytes = base58.b58decode(private_key_str)
+            logger.debug(f"[WALLET] Decoded key length: {len(key_bytes)} bytes")
 
             # Validate key length
-            if len(key_parts) != 64:
-                logger.error(f"[WALLET] Invalid key length: {len(key_parts)} (expected 64)")
-                raise ValueError(f"Invalid private key length: {len(key_parts)}")
+            if len(key_bytes) != 64:
+                logger.error(f"[WALLET] Invalid key length: {len(key_bytes)} (expected 64)")
+                raise ValueError(f"Invalid private key length: {len(key_bytes)}")
 
-            # Convert string back to bytes
-            private_key_bytes = bytes([int(i) for i in key_parts])
-            logger.debug(f"[WALLET] Converted to bytes with length: {len(private_key_bytes)}")
-
-            # Validate each byte is in valid range
-            if not all(0 <= b <= 255 for b in private_key_bytes):
-                logger.error("[WALLET] Invalid byte values in private key")
-                raise ValueError("Invalid byte values in private key")
-
-            keypair = Keypair.from_bytes(private_key_bytes)
+            # Create keypair to verify the key is valid
+            keypair = Keypair.from_bytes(key_bytes)
             public_key = str(keypair.pubkey())
             logger.info(f"[WALLET] Successfully validated keypair. Public key: {public_key}")
-
-            # Verify we can recreate the keypair from the string we'll store
-            test_bytes = bytes([int(i) for i in private_key_str.split(',')])
-            test_keypair = Keypair.from_bytes(test_bytes)
-            if str(test_keypair.pubkey()) != public_key:
-                logger.error("[WALLET] Key verification failed")
-                raise ValueError("Key verification failed")
-            logger.info("[WALLET] Key verification successful")
 
         except Exception as e:
             logger.error(f"[WALLET] Invalid private key format: {str(e)}")
             logger.error(f"[WALLET] Error type: {type(e).__name__}")
             await message.reply(
                 "❌ Неверный формат приватного ключа.\n"
-                "Убедитесь, что вы скопировали его правильно.",
+                "Убедитесь, что вы скопировали ключ в формате base58 правильно.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="↩️ Попробовать снова", callback_data="import_wallet")],
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="wallet_menu")]
@@ -246,7 +231,7 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
             user = User(
                 telegram_id=user_id,
                 solana_wallet=public_key,
-                private_key=private_key_str,  # Store original array string
+                private_key=private_key_str,  # Store original base58 string
                 referral_code=str(uuid.uuid4())[:8],
                 total_volume=0.0,
                 created_at=datetime.now(),

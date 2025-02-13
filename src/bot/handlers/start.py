@@ -11,6 +11,7 @@ from solders.keypair import Keypair
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import F
+import base58
 
 from src.bot.crud import create_initial_user_settings
 
@@ -80,7 +81,8 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         else:
             # Генерируем новый Solana-кошелек
             new_keypair = Keypair()
-            private_key = list(bytes(new_keypair))  # Приватный ключ как список чисел
+            # Получаем приватный ключ в формате base58
+            private_key = base58.b58encode(bytes(new_keypair)).decode('ascii')
 
             # Поиск владельца реферального кода (если он передан)
             referrer = None

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import logging
 from solders.keypair import Keypair
+import base58
 
 load_dotenv()
 
@@ -65,7 +66,7 @@ class User(Base):
 
     @property
     def private_key(self) -> str:
-        """Decrypt and return private key"""
+        """Decrypt and return private key in base58 format"""
         if not self._private_key:
             logger.error("[DB] No encrypted private key found")
             return None
@@ -76,25 +77,19 @@ class User(Base):
             # Decrypt the key
             decrypted = cipher_suite.decrypt(self._private_key.encode('ascii')).decode('ascii')
             logger.info("[DB] Successfully decrypted private key")
-            logger.debug(f"[DB] Decrypted key length: {len(decrypted)}")
-
+            
             # Validate decrypted key format
             try:
-                key_parts = decrypted.split(',')
-                logger.debug(f"[DB] Split decrypted key into {len(key_parts)} parts")
+                # Decode base58 string to bytes
+                key_bytes = base58.b58decode(decrypted)
+                logger.debug(f"[DB] Decoded key length: {len(key_bytes)} bytes")
 
-                if len(key_parts) != 64:
-                    logger.error(f"[DB] Invalid decrypted key length: {len(key_parts)} (expected 64)")
-                    return None
-
-                # Verify each part is a valid integer
-                key_bytes = [int(i) for i in key_parts]
-                if not all(0 <= b <= 255 for b in key_bytes):
-                    logger.error("[DB] Invalid byte values in decrypted key")
+                if len(key_bytes) != 64:
+                    logger.error(f"[DB] Invalid decrypted key length: {len(key_bytes)} (expected 64)")
                     return None
 
                 # Try to create a keypair to verify the key is valid
-                keypair = Keypair.from_bytes(bytes(key_bytes))
+                keypair = Keypair.from_bytes(key_bytes)
                 logger.debug(f"[DB] Successfully verified key. Public key: {keypair.pubkey()}")
 
             except Exception as e:
@@ -111,7 +106,7 @@ class User(Base):
 
     @private_key.setter
     def private_key(self, value: str):
-        """Encrypt and save private key"""
+        """Encrypt and save private key in base58 format"""
         if value is None:
             logger.info("[DB] Setting private key to None")
             self._private_key = None
@@ -119,35 +114,25 @@ class User(Base):
             try:
                 logger.info("[DB] Validating private key before encryption")
 
-                # Convert string representation of array to list of integers
-                if value.startswith('[') and value.endswith(']'):
-                    # Handle array format: [185, 192, ...]
-                    key_parts = value[1:-1].split(',')
-                else:
-                    # Handle comma-separated format: 185,192,...
-                    key_parts = value.split(',')
+                try:
+                    # Decode base58 string to bytes
+                    key_bytes = base58.b58decode(value)
+                    
+                    if len(key_bytes) != 64:
+                        logger.error(f"[DB] Invalid key length: {len(key_bytes)} (expected 64)")
+                        raise ValueError(f"Invalid private key length: {len(key_bytes)}")
 
-                # Clean and convert parts to integers
-                key_bytes = [int(part.strip()) for part in key_parts]
+                    # Try to create a keypair to verify the key is valid
+                    keypair = Keypair.from_bytes(key_bytes)
+                    logger.debug(f"[DB] Successfully verified key. Public key: {keypair.pubkey()}")
 
-                if len(key_bytes) != 64:
-                    logger.error(f"[DB] Invalid key length: {len(key_bytes)} (expected 64)")
-                    raise ValueError(f"Invalid private key length: {len(key_bytes)}")
+                except ValueError as e:
+                    logger.error(f"[DB] Invalid base58 format: {str(e)}")
+                    raise ValueError("Invalid base58 format")
 
-                if not all(0 <= b <= 255 for b in key_bytes):
-                    logger.error("[DB] Invalid byte values in key")
-                    raise ValueError("Invalid byte values in key")
-
-                # Try to create a keypair to verify the key is valid
-                keypair = Keypair.from_bytes(bytes(key_bytes))
-                logger.debug(f"[DB] Successfully verified key. Public key: {keypair.pubkey()}")
-
-                # Convert to standard format (comma-separated without brackets)
-                standard_format = ','.join(str(b) for b in key_bytes)
-
-                # Encrypt the key
+                # Encrypt the base58 string
                 logger.info("[DB] Encrypting private key")
-                encrypted = cipher_suite.encrypt(standard_format.encode('ascii')).decode('ascii')
+                encrypted = cipher_suite.encrypt(value.encode('ascii')).decode('ascii')
                 logger.debug(f"[DB] Encrypted key length: {len(encrypted)}")
 
                 self._private_key = encrypted
