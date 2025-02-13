@@ -170,8 +170,8 @@ async def on_import_wallet_button(callback_query: types.CallbackQuery, state: FS
     try:
         await callback_query.message.answer(
             "🔑 Импорт кошелька\n\n"
-            "Отправьте приватный ключ в формате base58.\n"
-            "Пример: 4dmKkXNHJmR1XNprLmLodE47eWnbnZAiBrxPATqjyUC3s1otoaqBBYi3bexHnEYzMYjE5GgQPQvKdHXk9KwvXWpw\n\n"
+            "Отправьте приватный ключ.\n"
+            "\n"
             "⚠️ ВНИМАНИЕ: Никогда не делитесь своим приватным ключом!\n"
             "Импортируйте кошелек только из надежных источников.",
             reply_markup=ForceReply(selective=True)
@@ -210,7 +210,7 @@ async def handle_private_key_input(message: types.Message, state: FSMContext, se
             logger.error(f"[WALLET] Error type: {type(e).__name__}")
             await message.reply(
                 "❌ Неверный формат приватного ключа.\n"
-                "Убедитесь, что вы скопировали ключ в формате base58 правильно.",
+                "Убедитесь, что вы скопировали ключ правильно.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="↩️ Попробовать снова", callback_data="import_wallet")],
                     [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="wallet_menu")]

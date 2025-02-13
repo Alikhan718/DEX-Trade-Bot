@@ -45,6 +45,7 @@ from typing import Optional, Dict, Union
 from src.solana_module.sdk.jito_jsonrpc_sdk import JitoJsonRpcSDK
 from src.database.models import Trade
 from datetime import datetime
+import base58
 
 # Configure Logging
 logging.basicConfig(
@@ -180,32 +181,33 @@ class SolanaClient:
                 logger.debug(f"[CLIENT] Private key string length: {len(self._private_key)}")
 
                 try:
-                    # Split and convert to integers
-                    key_parts = self._private_key.split(',')
-                    logger.debug(f"[CLIENT] Split private key into {len(key_parts)} parts")
-
-                    key_bytes = [int(i) for i in key_parts]
-                    logger.debug(f"[CLIENT] Converted to bytes array with length: {len(key_bytes)}")
-
-                    if len(key_bytes) != 64:
-                        logger.error(f"[CLIENT] Invalid key length: {len(key_bytes)} (expected 64)")
-                        raise ValueError(f"Invalid private key length: {len(key_bytes)}")
+                    # Проверяем, является ли ключ base58 строкой
+                    try:
+                        key_bytes = base58.b58decode(self._private_key)
+                        if len(key_bytes) != 64:
+                            raise ValueError(f"Invalid base58 key length: {len(key_bytes)}")
+                        self.payer = Keypair.from_bytes(key_bytes)
+                        logger.info(f"[CLIENT] Loaded base58 keypair. Public key: {self.payer.pubkey()}")
+                        return self.payer
+                    except:
+                        # Если не base58, пробуем старый формат
+                        key_parts = self._private_key.split(',')
+                        logger.debug(f"[CLIENT] Split private key into {len(key_parts)} parts")
+                        key_bytes = [int(i) for i in key_parts]
+                        logger.debug(f"[CLIENT] Converted to bytes array with length: {len(key_bytes)}")
+                        
+                        if len(key_bytes) != 64:
+                            logger.error(f"[CLIENT] Invalid key length: {len(key_bytes)} (expected 64)")
+                            raise ValueError(f"Invalid private key length: {len(key_bytes)}")
+                            
+                        key_bytes_obj = bytes(key_bytes)
+                        self.payer = Keypair.from_bytes(key_bytes_obj)
+                        logger.info(f"[CLIENT] Loaded array keypair. Public key: {self.payer.pubkey()}")
+                        return self.payer
 
                 except Exception as e:
-                    logger.error(f"[CLIENT] Failed to parse private key string: {str(e)}")
-                    logger.error(f"[CLIENT] Key parts: {key_parts[:3]}... (showing first 3 parts)")
-                    raise ValueError("Failed to parse private key string") from e
-
-                try:
-                    key_bytes_obj = bytes(key_bytes)
-                    logger.debug(f"[CLIENT] Created bytes object with length: {len(key_bytes_obj)}")
-
-                    self.payer = Keypair.from_bytes(key_bytes_obj)
-                    logger.info(f"[CLIENT] Keypair loaded successfully. Public key: {self.payer.pubkey()}")
-                except Exception as e:
-                    logger.error(f"[CLIENT] Failed to create keypair from bytes: {str(e)}")
-                    logger.error(f"[CLIENT] First few bytes: {key_bytes_obj[:10] if key_bytes_obj else None}")
-                    raise ValueError("Failed to create keypair from bytes") from e
+                    logger.error(f"[CLIENT] Failed to parse private key: {str(e)}")
+                    raise ValueError("Failed to parse private key") from e
 
             return self.payer
 
