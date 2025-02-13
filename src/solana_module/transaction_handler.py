@@ -67,46 +67,47 @@ class UserTransactionHandler:
             logger.info(f"[CALC_BUY] Input parameters: amount_sol={amount_sol}, slippage={slippage}")
             
             mint = Pubkey.from_string(token_address)
-            try:
-                radium = RaydiumAmmV4(self.client.payer)
-                logger.info(f"Starting buy_token for address: {token_address}")
-                logger.info(f"[CALC_BUY] Attempting Raydium buy for token: {token_address}")
-                logger.info(f"[CALC_BUY] Amount SOL: {amount_sol}, Slippage: {slippage}%")
+            market_cap = (await self.client.token_info(str(mint)))["marketCap"]
+            if float(market_cap) > 80000:
+                try:
+                    radium = RaydiumAmmV4(self.client.payer)
+                    logger.info(f"Starting buy_token for address: {token_address}")
+                    logger.info(f"[CALC_BUY] Attempting Raydium buy for token: {token_address}")
+                    logger.info(f"[CALC_BUY] Amount SOL: {amount_sol}, Slippage: {slippage}%")
 
-                # Convert token address to Pubkey
-                logger.info(f"Converted to Pubkey: {mint}")
-                tx_signature = await radium.buy_exec(mint, amount_sol, slippage)
-                if tx_signature:
-                    return tx_signature
-            except Exception as e:
-                logger.error(f"[CALC_BUY] Raydium buy failed: {e}")
-                pass
-
-            bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
-            associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
-            logger.info(f"[CALC_BUY] Fallback to bonding curve: {bonding_curve_address}")
-            logger.info(f"[CALC_BUY] Associated bonding curve: {associated_bonding_curve}")
-            logger.info(f"[CALC_BUY] Final parameters: amount={amount_sol} SOL, slippage={slippage}%")
-
-            # Execute buy transaction using SolanaClient
-            logger.info(f"Executing buy transaction for {amount_sol} SOL with {slippage}% slippage")
-            tx_signature = await self.client.buy_token(
-                mint=mint,
-                bonding_curve=bonding_curve_address,
-                associated_bonding_curve=associated_bonding_curve,
-                amount=amount_sol,
-                slippage=slippage / 100,
-                user=user# Convert percentage to decimal
-            )
-            logger.info(f"Buy transaction signature: {tx_signature} and given attributes: {mint}, {amount_sol}, {slippage / 100}")
-            
-            if tx_signature:
-                logger.info(f"Buy transaction successful: {tx_signature}")
+                    # Convert token address to Pubkey
+                    logger.info(f"Converted to Pubkey: {mint}")
+                    tx_signature = await radium.buy_exec(mint, amount_sol, slippage)
+                    if tx_signature:
+                        return tx_signature
+                except Exception as e:
+                    logger.error(f"[CALC_BUY] Raydium buy failed: {e}")
             else:
-                logger.error("Buy transaction failed: no signature returned")
+                bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
+                associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
+                logger.info(f"[CALC_BUY] Fallback to bonding curve: {bonding_curve_address}")
+                logger.info(f"[CALC_BUY] Associated bonding curve: {associated_bonding_curve}")
+                logger.info(f"[CALC_BUY] Final parameters: amount={amount_sol} SOL, slippage={slippage}%")
+
+                # Execute buy transaction using SolanaClient
+                logger.info(f"Executing buy transaction for {amount_sol} SOL with {slippage}% slippage")
+                tx_signature = await self.client.buy_token(
+                    mint=mint,
+                    bonding_curve=bonding_curve_address,
+                    associated_bonding_curve=associated_bonding_curve,
+                    amount=amount_sol,
+                    slippage=slippage / 100,
+                    user=user# Convert percentage to decimal
+                )
+                logger.info(f"Buy transaction signature: {tx_signature} and given attributes: {mint}, {amount_sol}, {slippage / 100}")
                 
-            return tx_signature
-            
+                if tx_signature:
+                    logger.info(f"Buy transaction successful: {tx_signature}")
+                else:
+                    logger.error("Buy transaction failed: no signature returned")
+                    
+                return tx_signature
+                
         except Exception as e:
             traceback.print_exc()
             logger.error(f"Error buying token: {e}")
@@ -133,49 +134,54 @@ class UserTransactionHandler:
         Returns:
             Transaction signature if successful, None otherwise
         """
+            
+        mint = Pubkey.from_string(token_address)
+        market_cap = (await self.client.token_info(str(mint)))["marketCap"]
         try:
-            logger.info("[HANDLER] Starting sell transaction for token %s", token_address)
-            logger.info("[HANDLER] Parameters: amount=%s, percentage=%s, slippage=%s", 
-                amount_tokens, sell_percentage, slippage)
+            if float(market_cap) > 80000:
+                logger.info("[HANDLER] Starting sell transaction for token %s", token_address)
+                logger.info("[HANDLER] Parameters: amount=%s, percentage=%s, slippage=%s", 
+                    amount_tokens, sell_percentage, slippage)
 
-            # Convert token address to Pubkey
-            radium = RaydiumAmmV4(self.client.payer)
-            mint = Pubkey.from_string(token_address)
-            tx_signature = await radium.sell_exec(mint, sell_percentage, slippage)
-            if tx_signature:
-                return tx_signature
-            # Get bonding curve addresses
-            bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
-            associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
-            logger.info(f"[CALC_SELL] Attempting Raydium sell for token: {token_address}")
-            
-            # Get token balance if selling percentage
-            if sell_percentage is not None and sell_percentage != 'initial':
-                # Get associated token account
-                associated_token_account = await self.client.create_associated_token_account(mint)
-                logger.info(f"[CALC_SELL] Associated token account: {associated_token_account}")
+                # Convert token address to Pubkey
+                radium = RaydiumAmmV4(self.client.payer)
+                mint = Pubkey.from_string(token_address)
+                tx_signature = await radium.sell_exec(mint, sell_percentage, slippage)
+                if tx_signature:
+                    return tx_signature
+            else:
+                # Get bonding curve addresses
+                bonding_curve_address, _ = get_bonding_curve_address(mint, self.client.PUMP_PROGRAM)
+                associated_bonding_curve = find_associated_bonding_curve(mint, bonding_curve_address)
+                logger.info(f"[CALC_SELL] Attempting Raydium sell for token: {token_address}")
                 
-                # Get token balance
-                resp = await self.client.client.get_token_account_balance(associated_token_account)
-                token_balance = float(resp.value.amount)
-                logger.info(f"[CALC_SELL] Current token balance: {token_balance}")
+                # Get token balance if selling percentage
+                if sell_percentage is not None and sell_percentage != 'initial':
+                    # Get associated token account
+                    associated_token_account = await self.client.create_associated_token_account(mint)
+                    logger.info(f"[CALC_SELL] Associated token account: {associated_token_account}")
+                    
+                    # Get token balance
+                    resp = await self.client.client.get_token_account_balance(associated_token_account)
+                    token_balance = float(resp.value.amount)
+                    logger.info(f"[CALC_SELL] Current token balance: {token_balance}")
+                    
+                    # Calculate amount to sell
+                    amount_tokens = (token_balance * (sell_percentage / 100))
+                    logger.info(f"[CALC_SELL] Calculated tokens to sell: {token_balance} * ({sell_percentage} / 100) = {amount_tokens}")
                 
-                # Calculate amount to sell
-                amount_tokens = (token_balance * (sell_percentage / 100))
-                logger.info(f"[CALC_SELL] Calculated tokens to sell: {token_balance} * ({sell_percentage} / 100) = {amount_tokens}")
-            
-            if amount_tokens is None:
-                logger.error("[CALC_SELL] No amount specified for sell")
-                raise ValueError("Must specify either amount_tokens or sell_percentage")
+                if amount_tokens is None:
+                    logger.error("[CALC_SELL] No amount specified for sell")
+                    raise ValueError("Must specify either amount_tokens or sell_percentage")
 
-            # Execute sell transaction using SolanaClient
-            return await self.client.sell_token(
-                mint=mint,
-                bonding_curve=bonding_curve_address,
-                associated_bonding_curve=associated_bonding_curve,
-                token_amount=amount_tokens,
-                min_amount=slippage / 100  # Convert percentage to decimal
-            )
+                # Execute sell transaction using SolanaClient
+                return await self.client.sell_token(
+                    mint=mint,
+                    bonding_curve=bonding_curve_address,
+                    associated_bonding_curve=associated_bonding_curve,
+                    token_amount=amount_tokens,
+                    min_amount=slippage / 100  # Convert percentage to decimal
+                )
             
         except Exception as e:
             traceback.print_exc()

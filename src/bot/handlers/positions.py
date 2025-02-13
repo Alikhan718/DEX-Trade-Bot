@@ -18,14 +18,16 @@ token_info_service = TokenInfoService()
 async def format_token_info(token_address: str, balance: float, token_info: dict) -> str:
     """Форматирует информацию о токене для отображения"""
     token_value_usd = balance * token_info.price_usd
+    deep_link = f"https://t.me/test2737237bot?start=token-{token_address}"  # Укажи username своего бота
+
     return (
-        f"💎 {token_info.symbol} ({token_info.name})\n"
-        f"└ Баланс: {_format_price(balance)} ({_format_price(token_value_usd)}$)\n"
-        f"└ Цена: ${_format_price(token_info.price_usd)}\n"
-        f"└ Market Cap: ${_format_price(token_info.market_cap)}\n"
-        f"└ Renounced: {'✅' if token_info.is_renounced else '❌'}\n"
-        f"└ Burnt: {'✅' if token_info.is_burnt else '❌'}\n"
-        f"└ Адрес: `{token_address}`\n"
+        f"💎 {token_info.symbol} ([{token_info.name}]({deep_link}))\n"
+        f"└ *Баланс:* `{_format_price(balance)}` (`{_format_price(token_value_usd)}`$)\n"
+        f"└ *Цена:* \\${_format_price(token_info.price_usd)}\n"
+        f"└ *Market Cap:* \\${_format_price(token_info.market_cap)}\n"
+        f"└ *Renounced:* {'✅' if token_info.is_renounced else '❌'}\n"
+        f"└ *Burnt:* {'✅' if token_info.is_burnt else '❌'}\n"
+        f"└ *Адрес:* `{token_address}`\n"
     )
 
 @router.callback_query(F.data == "open_positions")

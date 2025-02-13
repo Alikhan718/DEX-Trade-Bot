@@ -18,6 +18,7 @@ from src.bot.crud import create_initial_user_settings
 from src.database.models import User
 from src.services.solana_service import SolanaService
 from src.bot.utils.user import get_real_user_id
+from src.bot.handlers.sell import on_token_selected_via_link
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ main_menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 
 # Высший приоритет - базовые команды
 @router.message(CommandStart(), flags={"priority": 1})
-async def show_main_menu(message: types.Message, session: AsyncSession, solana_service: SolanaService):
+async def show_main_menu(message: types.Message, session: AsyncSession, solana_service: SolanaService, state: FSMContext):
     """Главное меню с обработкой реферального кода"""
     try:
         # Получаем ID пользователя
@@ -67,6 +68,9 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         args = message.text.split()
         referral_code = args[1] if len(args) > 1 else None
         # logger.info(f"Referral code: {referral_code}")
+        if referral_code and len(referral_code.split('-')) > 1:
+            await on_token_selected_via_link(message, state, session, solana_service)
+            return
 
         # Пытаемся найти пользователя по ID
         stmt = select(User).where(User.telegram_id == user_id)

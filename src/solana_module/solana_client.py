@@ -586,7 +586,7 @@ class SolanaClient:
             tx_sell_signature = await self.client.send_transaction(
                 transaction,
                 self.payer,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed),
+                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
             )
 
             logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_sell_signature.value}")
@@ -608,7 +608,7 @@ class SolanaClient:
                          token_amount: float, min_amount: float = 0.25, antimev: bool = False) -> str:
         """Executes token sale."""
         try:
-            associated_token_account = await self.create_associated_token_account(mint)
+            associated_token_account = get_associated_token_address(self.payer.pubkey(), mint)
         except Exception as e:
             logger.error(f"Failed to create or verify associated token account: {e}")
             return

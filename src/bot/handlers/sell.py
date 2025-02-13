@@ -146,10 +146,9 @@ async def handle_token_selection(callback_query: types.CallbackQuery, state: FSM
         )
 
 
-@router.message(F.text.startswith("token_"), flags={"priority": 2})
+@router.message(F.text.startswith("token-"), flags={"priority": 2})
 async def on_token_selected_via_link(message: types.Message, state: FSMContext, session: AsyncSession,
                                      solana_service: SolanaService):
-    message.text = message.text.split("_")[1]
     await handle_token_input(message, state, session, solana_service)
 
 
@@ -158,7 +157,13 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
                              solana_service: SolanaService):
     """Handle token address input"""
     try:
-        token_address = message.text.strip()
+        if len(message.text.split()) > 1:
+            try:
+                token_address = message.text.split()[1].split("-")[1]
+            except Exception:
+                token_address = message.text.strip()
+        else:
+            token_address = message.text.strip()
 
         if not _is_valid_token_address(token_address):
             await message.reply(
