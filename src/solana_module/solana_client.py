@@ -12,7 +12,7 @@ from pprint import pprint
 
 from solana.rpc.types import TokenAccountOpts
 from solana.rpc.async_api import AsyncClient
-from solana.rpc.commitment import Confirmed
+from solana.rpc.commitment import Confirmed, Processed
 from solana.rpc.types import TxOpts
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
@@ -235,7 +235,7 @@ class SolanaClient:
             tx_ata_signature = await self.client.send_transaction(
                 tx_ata,
                 self.payer,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed)
             )
             logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
             logger.info(f"Associated token account created: {associated_token_account}")
@@ -307,13 +307,13 @@ class SolanaClient:
                 await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
             tx_buy.fee_payer = self.payer.pubkey()
             tx_buy.sign(self.payer)
-
+            logger.info("COMPUTE UNIT PRICE:", self.compute_unit_price)
             tx_buy_signature = await send_request_with_rate_limit(
                 self.client,
                 self.client.send_transaction,
                 tx_buy,
                 self.payer,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed)
             )
 
             logger.info(f"Buy Transaction sent: https://explorer.solana.com/tx/{tx_buy_signature.value}")
@@ -588,7 +588,7 @@ class SolanaClient:
             tx_sell_signature = await self.client.send_transaction(
                 transaction,
                 self.payer,
-                opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed),
             )
 
             logger.info(f"Transaction sent: https://explorer.solana.com/tx/{tx_sell_signature.value}")

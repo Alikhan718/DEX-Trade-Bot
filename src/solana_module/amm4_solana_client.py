@@ -23,7 +23,7 @@ from solders.transaction import VersionedTransaction
 from solders.transaction_status import TransactionConfirmationStatus
 
 from solana.rpc.async_api import AsyncClient  # Asynchronous Solana RPC client
-from solana.rpc.commitment import Processed
+from solana.rpc.commitment import Processed, Confirmed
 from solana.rpc.types import TokenAccountOpts, TxOpts
 from solders.system_program import TransferParams, transfer
 from spl.token.client import Token
@@ -209,7 +209,7 @@ class RaydiumAmmV4:
     with your actual Solana client and keypair logic in production.
     """
 
-    def __init__(self, payer_keypair):
+    def __init__(self, payer_keypair, unit_price=1_500_000):
         # Load environment (for the SECRET_KEY, etc.)
 
         # Create an async Solana RPC client
@@ -220,7 +220,7 @@ class RaydiumAmmV4:
 
         # Example compute budget
         self.UNIT_BUDGET = 1_400_000
-        self.UNIT_PRICE = 200_000
+        self.UNIT_PRICE = unit_price
         self.sdk = JitoJsonRpcSDK(url="https://mainnet.block-engine.jito.wtf/api/v1")
 
         # Hard-coded addresses for Raydium
@@ -369,7 +369,7 @@ class RaydiumAmmV4:
             base_vault = pool_keys.base_vault
             base_decimal = pool_keys.base_decimals
             base_mint = pool_keys.base_mint
-            
+
             balances_response = await self.client.get_multiple_accounts_json_parsed(
                 [quote_vault, base_vault],
                 Processed
@@ -397,7 +397,7 @@ class RaydiumAmmV4:
             if quote_account_balance is None or base_account_balance is None:
                 print("Error: One of the account balances is None.")
                 return None, None, None
-            
+
             if base_mint == WSOL:
                 base_reserve = quote_account_balance
                 quote_reserve = base_account_balance
@@ -615,7 +615,7 @@ class RaydiumAmmV4:
                     owner=self.payer_keypair.pubkey(),
                 )
             )
-            
+
             recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
             lamports = amount_in // 100
             transfer_ix = transfer(
@@ -632,7 +632,7 @@ class RaydiumAmmV4:
                 create_wsol_account_instruction,
                 init_wsol_account_instruction,
             ]
-            
+
             if antimev:
                 jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
                 print(f"Using antimev tip account: {jito_tip_account}")
@@ -653,7 +653,7 @@ class RaydiumAmmV4:
             ])
 
             # Fetch latest blockhash
-            latest_blockhash_resp = await self.client.get_latest_blockhash()
+            latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
             latest_blockhash = latest_blockhash_resp.value.blockhash
 
             compiled_message = MessageV0.try_compile(
@@ -775,7 +775,7 @@ class RaydiumAmmV4:
                 accounts=pool_keys,
                 owner=self.payer_keypair.pubkey(),
             )
-            
+
 
             close_wsol_account_instruction = close_account(
                 CloseAccountParams(
@@ -785,7 +785,7 @@ class RaydiumAmmV4:
                     owner=self.payer_keypair.pubkey(),
                 )
             )
-            
+
             recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
             lamports = minimum_amount_out // 100
             transfer_ix = transfer(
@@ -805,7 +805,7 @@ class RaydiumAmmV4:
                 transfer_ix,
                 close_wsol_account_instruction,
             ]
-            
+
             if antimev:
                 jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
                 print(f"Using antimev tip account: {jito_tip_account}")

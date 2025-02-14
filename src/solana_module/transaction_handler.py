@@ -70,8 +70,9 @@ class UserTransactionHandler:
             market_cap = (await self.client.token_info(str(mint)))["marketCap"]
             if float(market_cap) > 80000:
                 try:
-                    radium = RaydiumAmmV4(self.client.payer)
+                    radium = RaydiumAmmV4(self.client.payer, self.client.compute_unit_price)
                     logger.info(f"Starting buy_token for address: {token_address}")
+                    logger.info(f"[UNIT_PRICE]: {self.client.compute_unit_price}")
                     logger.info(f"[CALC_BUY] Attempting Raydium buy for token: {token_address}")
                     logger.info(f"[CALC_BUY] Amount SOL: {amount_sol}, Slippage: {slippage}%")
 
