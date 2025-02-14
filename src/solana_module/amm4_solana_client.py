@@ -219,7 +219,7 @@ class RaydiumAmmV4:
         self.payer_keypair = payer_keypair
 
         # Example compute budget
-        self.UNIT_BUDGET = 1_400_000
+        self.UNIT_BUDGET = 2_000_000
         self.UNIT_PRICE = unit_price
         self.sdk = JitoJsonRpcSDK(url="https://mainnet.block-engine.jito.wtf/api/v1")
 
@@ -462,7 +462,7 @@ class RaydiumAmmV4:
             print(f"Error in get_token_balance: {e}")
             return None
 
-    async def confirm_txn(self, txn_sig: str, max_retries: int = 40, retry_interval: int = 3) -> bool:
+    async def confirm_txn(self, txn_sig: str, max_retries: int = 40, retry_interval: int = 1) -> bool:
         """
         Poll for transaction confirmation status until finalized or until max_retries is reached.
         """
@@ -473,7 +473,7 @@ class RaydiumAmmV4:
                 status = status_res.value[0]
                 if status:
                     print(f"Transaction status: {status}")
-                    if status.confirmation_status == TransactionConfirmationStatus.Finalized:
+                    if status.confirmation_status == TransactionConfirmationStatus.Confirmed:
                         print("Transaction finalized.")
                         return True
                     elif status.err:
@@ -633,15 +633,14 @@ class RaydiumAmmV4:
                 init_wsol_account_instruction,
             ]
 
-            if antimev:
-                jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
-                print(f"Using antimev tip account: {jito_tip_account}")
-                jito_tip_ix = transfer(TransferParams(
-                        from_pubkey=self.payer.pubkey(),
-                        to_pubkey=jito_tip_account,
-                        lamports=100000
-                    ))
-                instructions.append(jito_tip_ix)
+            jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+            print(f"Using antimev tip account: {jito_tip_account}")
+            jito_tip_ix = transfer(TransferParams(
+                    from_pubkey=self.payer_keypair.pubkey(),
+                    to_pubkey=jito_tip_account,
+                    lamports=1000000
+                ))
+            instructions.append(jito_tip_ix)
 
             if create_token_account_instruction:
                 instructions.append(create_token_account_instruction)
@@ -666,7 +665,7 @@ class RaydiumAmmV4:
             txn = VersionedTransaction(compiled_message, [self.payer_keypair])
             send_resp = await self.client.send_transaction(
                 txn=txn,
-                opts=TxOpts(skip_preflight=True),
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed),
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
@@ -841,7 +840,7 @@ class RaydiumAmmV4:
             txn = VersionedTransaction(compiled_message, [self.payer_keypair])
             send_resp = await self.client.send_transaction(
                 txn=txn,
-                opts=TxOpts(skip_preflight=True),
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed),
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
