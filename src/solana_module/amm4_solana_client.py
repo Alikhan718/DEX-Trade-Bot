@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import httpx  # For async HTTP requests
 from dotenv import load_dotenv
+import time
 
 # Solder / Solana imports
 from solders.keypair import Keypair
@@ -492,47 +493,60 @@ class RaydiumAmmV4:
     async def buy(self, pair_address: str, sol_in: float = 0.01, slippage: int = 5, antimev=False) -> bool:
         """
         Buys the 'other' token side from the pool using SOL as input (wrapped as WSOL).
-        If base_mint == WSOL, we interpret that we are actually buying the quote_mint, otherwise base_mint.
+        Includes detailed timing measurements for each operation.
         """
+        timings = {}
+        total_start = time.time()
+        
         try:
+            # Pool Keys Fetching
+            pool_keys_start = time.time()
             print(f"Starting buy transaction for pair address: {pair_address}")
-
             print("Fetching pool keys...")
             pool_keys = await self.fetch_amm_v4_pool_keys(pair_address)
             if pool_keys is None:
                 print("No pool keys found...")
                 return False
+            timings['pool_keys_fetch'] = time.time() - pool_keys_start
             print("Pool keys fetched successfully.")
-
-            # Decide which mint we are actually buying
+            
+            # Mint Selection
+            mint_start = time.time()
             mint = (
                 pool_keys.base_mint
                 if pool_keys.base_mint != WSOL
                 else pool_keys.quote_mint
             )
-
+            timings['mint_selection'] = time.time() - mint_start
+            
+            # Reserve Calculation
+            reserves_start = time.time()
             print("Calculating transaction amounts...")
             amount_in = int(sol_in * SOL_DECIMAL)
-
             base_reserve, quote_reserve, token_decimal = await self.get_amm_v4_reserves(pool_keys)
             if base_reserve is None or quote_reserve is None:
                 print("Error fetching pool reserves.")
                 return False
-
+            timings['reserves_fetch'] = time.time() - reserves_start
+            
+            # Amount Calculations
+            amounts_start = time.time()
             amount_out_estimate = self.sol_for_tokens(sol_in, base_reserve, quote_reserve)
             print(f"Estimated Amount Out: {amount_out_estimate}")
-
             slippage_adjustment = 1 - (slippage / 100)
             amount_out_with_slippage = amount_out_estimate * slippage_adjustment
             minimum_amount_out = int(amount_out_with_slippage * (10 ** token_decimal))
             print(f"Amount In (lamports): {amount_in} | Minimum Amount Out: {minimum_amount_out}")
-
-            # Check if we already have an associated token account
+            timings['amount_calculations'] = time.time() - amounts_start
+            
+            # Token Account Check
+            token_account_start = time.time()
             resp = await self.client.get_token_accounts_by_owner(
                 self.payer_keypair.pubkey(),
                 TokenAccountOpts(mint=mint),
                 commitment=Processed
             )
+            
             if resp.value:
                 token_account = resp.value[0].pubkey
                 create_token_account_instruction = None
@@ -541,142 +555,169 @@ class RaydiumAmmV4:
                 token_account = get_associated_token_address(
                     self.payer_keypair.pubkey(), mint
                 )
-                # Create associated token account for that mint
                 create_token_account_instruction = create_associated_token_account(
                     self.payer_keypair.pubkey(),
                     self.payer_keypair.pubkey(),
                     mint
                 )
                 print("No existing token account found; creating associated token account.")
-
-            # Create and initialize a WSOL account for the SOL we want to swap
+            timings['token_account_check'] = time.time() - token_account_start
+            
+            # WSOL Account Setup
+            wsol_setup_start = time.time()
             seed_bytes = os.urandom(24)
             seed_b64 = base64.urlsafe_b64encode(seed_bytes).decode("utf-8")
-            # For Pubkey.create_with_seed in `solders`, we must replicate how seeds are used:
             wsol_token_account = Pubkey.create_with_seed(
                 self.payer_keypair.pubkey(),
                 seed_b64,
                 TOKEN_PROGRAM_ID
             )
-
-              # Sync method in SPL, might need adaptation
-            # Alternatively, you can compute the rent-exempt min via:
+            
             balance_needed = await self.client.get_minimum_balance_for_rent_exemption(ACCOUNT_LAYOUT_LEN)
             balance_needed = balance_needed.value
-            print(f"Rent-exempt min balance needed: {balance_needed} lamports")
-            #  But for brevity, we'll keep the example as is.
-
+            
             balance_resp = await self.client.get_balance(self.payer_keypair.pubkey())
             balance = balance_resp.value
-
+            
             print(f"Wallet Balance: {balance} lamports")
             print(f"Rent-exempt min balance needed: {balance_needed} lamports")
             print("Total required (approx):", amount_in + balance_needed + MINIMUM_TRANSACTION_FEE)
-
+            
             if balance < (amount_in + balance_needed + MINIMUM_TRANSACTION_FEE):
                 print("Insufficient balance to complete the transaction.")
                 return False
-
-            create_wsol_account_instruction = create_account_with_seed(
-                CreateAccountWithSeedParams(
-                    from_pubkey=self.payer_keypair.pubkey(),
-                    to_pubkey=wsol_token_account,
-                    base=self.payer_keypair.pubkey(),
-                    seed=seed_b64,
-                    lamports=int(balance_needed + amount_in),
-                    space=ACCOUNT_LAYOUT_LEN,
-                    owner=TOKEN_PROGRAM_ID,
-                )
+            timings['wsol_setup'] = time.time() - wsol_setup_start
+            
+            # Transaction Building
+            tx_build_start = time.time()
+            instructions = await self._build_transaction_instructions(
+                self.payer_keypair.pubkey(),
+                wsol_token_account,
+                token_account,
+                pool_keys,
+                amount_in,
+                minimum_amount_out,
+                balance_needed,
+                seed_b64,
+                create_token_account_instruction
             )
-
-            init_wsol_account_instruction = initialize_account(
-                InitializeAccountParams(
-                    program_id=TOKEN_PROGRAM_ID,
-                    account=wsol_token_account,
-                    mint=WSOL,
-                    owner=self.payer_keypair.pubkey(),
-                )
-            )
-
-            swap_instruction = self.make_amm_v4_swap_instruction(
-                amount_in=amount_in,
-                minimum_amount_out=minimum_amount_out,
-                token_account_in=wsol_token_account,
-                token_account_out=token_account,
-                accounts=pool_keys,
-                owner=self.payer_keypair.pubkey(),
-            )
-
-            close_wsol_account_instruction = close_account(
-                CloseAccountParams(
-                    program_id=TOKEN_PROGRAM_ID,
-                    account=wsol_token_account,
-                    dest=self.payer_keypair.pubkey(),
-                    owner=self.payer_keypair.pubkey(),
-                )
-            )
-
-            recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
-            lamports = amount_in // 100
-            transfer_ix = transfer(
-                    TransferParams(
-                        from_pubkey=self.payer_keypair.pubkey(),
-                        to_pubkey=recipient,
-                        lamports=lamports
-                    )
-                )
-
-            instructions = [
-                set_compute_unit_limit(self.UNIT_BUDGET),
-                set_compute_unit_price(self.UNIT_PRICE),
-                create_wsol_account_instruction,
-                init_wsol_account_instruction,
-            ]
-
-            jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
-            print(f"Using antimev tip account: {jito_tip_account}")
-            jito_tip_ix = transfer(TransferParams(
-                    from_pubkey=self.payer_keypair.pubkey(),
-                    to_pubkey=jito_tip_account,
-                    lamports=1000000
-                ))
-            instructions.append(jito_tip_ix)
-
-            if create_token_account_instruction:
-                instructions.append(create_token_account_instruction)
-
-            instructions.extend([
-                swap_instruction,
-                close_wsol_account_instruction,
-                transfer_ix,  # Transfer SOL to recipient
-            ])
-
-            # Fetch latest blockhash
+            timings['transaction_building'] = time.time() - tx_build_start
+            
+            # Transaction Execution
+            tx_execution_start = time.time()
             latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
             latest_blockhash = latest_blockhash_resp.value.blockhash
-
+            
             compiled_message = MessageV0.try_compile(
                 payer=self.payer_keypair.pubkey(),
                 instructions=instructions,
                 address_lookup_table_accounts=[],
                 recent_blockhash=latest_blockhash
             )
-
+            
             txn = VersionedTransaction(compiled_message, [self.payer_keypair])
             send_resp = await self.client.send_transaction(
                 txn=txn,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed),
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed, max_retries=0),
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
-
+            timings['transaction_execution'] = time.time() - tx_execution_start
+            
+            # Transaction Confirmation
+            confirmation_start = time.time()
             confirmed = await self.confirm_txn(txn_sig)
+            timings['transaction_confirmation'] = time.time() - confirmation_start
+            
+            # Total time
+            timings['total_execution'] = time.time() - total_start
+            
+            # Print detailed timing report
+            print("\nDetailed Timing Report:")
+            for operation, duration in timings.items():
+                print(f"{operation}: {duration:.4f} seconds")
+            
             print("Transaction confirmed:", confirmed)
             return txn_sig if confirmed else False
 
         except Exception as e:
             print("Error occurred during 'buy' transaction:", e)
             return False
+
+    async def _build_transaction_instructions(self, payer, wsol_account, token_account, pool_keys, 
+                                    amount_in, minimum_amount_out, balance_needed, seed_b64, 
+                                    create_token_account_instruction):
+        """Helper method to build transaction instructions."""
+        instructions = [
+            set_compute_unit_limit(self.UNIT_BUDGET),
+            set_compute_unit_price(self.UNIT_PRICE),
+            create_account_with_seed(
+                CreateAccountWithSeedParams(
+                    from_pubkey=payer,
+                    to_pubkey=wsol_account,
+                    base=payer,
+                    seed=seed_b64,
+                    lamports=int(balance_needed + amount_in),
+                    space=ACCOUNT_LAYOUT_LEN,
+                    owner=TOKEN_PROGRAM_ID,
+                )
+            ),
+            initialize_account(
+                InitializeAccountParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    account=wsol_account,
+                    mint=WSOL,
+                    owner=payer,
+                )
+            )
+        ]
+        
+        # Add antimev tip if enabled
+        jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+        print(f"Using antimev tip account: {jito_tip_account}")
+        jito_tip_ix = transfer(TransferParams(
+            from_pubkey=payer,
+            to_pubkey=jito_tip_account,
+            lamports=10000
+        ))
+        instructions.append(jito_tip_ix)
+        
+        if create_token_account_instruction:
+            instructions.append(create_token_account_instruction)
+        
+        # Add swap and cleanup instructions
+        swap_instruction = self.make_amm_v4_swap_instruction(
+            amount_in=amount_in,
+            minimum_amount_out=minimum_amount_out,
+            token_account_in=wsol_account,
+            token_account_out=token_account,
+            accounts=pool_keys,
+            owner=payer,
+        )
+        
+        recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
+        transfer_ix = transfer(
+            TransferParams(
+                from_pubkey=payer,
+                to_pubkey=recipient,
+                lamports=amount_in // 100
+            )
+        )
+        
+        instructions.extend([
+            swap_instruction,
+            close_account(
+                CloseAccountParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    account=wsol_account,
+                    dest=payer,
+                    owner=payer,
+                )
+            ),
+            transfer_ix,
+        ])
+        
+        return instructions
 
     async def sell(self, pair_address: str, percentage: int = 100, slippage: int = 5, antimev=False) -> bool:
         """
@@ -840,7 +881,7 @@ class RaydiumAmmV4:
             txn = VersionedTransaction(compiled_message, [self.payer_keypair])
             send_resp = await self.client.send_transaction(
                 txn=txn,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed),
+                opts=TxOpts(skip_preflight=False),
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
