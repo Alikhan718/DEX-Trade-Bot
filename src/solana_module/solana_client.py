@@ -1028,7 +1028,10 @@ class SolanaClient:
                 for account in data:
                     try:
                         mint = account.account.data.parsed["info"]["mint"]
-                        lamports = int(account.account.data.parsed["info"]["tokenAmount"]["uiAmount"])
+                        lamports = float(account.account.data.parsed["info"]["tokenAmount"]["uiAmount"])
+                        print(mint)
+                        # Получаем данные о токене
+                        print(lamports)
 
                         if lamports > 0:
                             mints_with_balance.append(mint)
