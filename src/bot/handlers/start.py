@@ -67,7 +67,33 @@ async def show_main_menu(message: types.Message, session: AsyncSession, solana_s
         # Извлекаем реферальный код из команды (если есть)
         args = message.text.split()
         referral_code = args[1] if len(args) > 1 else None
-        # logger.info(f"Referral code: {referral_code}")
+
+        # Проверяем, является ли это командой продажи токена
+        if referral_code and referral_code.startswith("sell_"):
+            token_address = referral_code.replace("sell_", "")
+            from src.bot.handlers.sell import show_sell_menu
+            
+            # Получаем пользователя
+            stmt = select(User).where(User.telegram_id == user_id)
+            result = await session.execute(stmt)
+            user = result.unique().scalar_one_or_none()
+            
+            if not user:
+                await message.answer("❌ Пользователь не найден")
+                return
+            
+            # Сохраняем данные в состояние
+            await state.update_data(
+                token_address=token_address,
+                user_id=user.id
+            )
+            
+            # Отправляем новое сообщение и используем его для show_sell_menu
+            new_message = await message.answer("🔄 Загрузка меню продажи...")
+            await show_sell_menu(new_message, state, session)
+            return
+
+        # Проверяем на token- команду
         if referral_code and len(referral_code.split('-')) > 1:
             await on_token_selected_via_link(message, state, session, solana_service)
             return

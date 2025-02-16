@@ -881,7 +881,7 @@ class RaydiumAmmV4:
             txn = VersionedTransaction(compiled_message, [self.payer_keypair])
             send_resp = await self.client.send_transaction(
                 txn=txn,
-                opts=TxOpts(skip_preflight=False),
+                opts=TxOpts(skip_preflight=True),
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
