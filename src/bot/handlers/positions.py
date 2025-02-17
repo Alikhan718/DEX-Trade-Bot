@@ -1,3 +1,4 @@
+import os
 from aiogram import Router, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,8 @@ from src.services.token_info import TokenInfoService
 from src.bot.handlers.buy import _format_price
 import logging
 import traceback
+from aiogram.fsm.context import FSMContext
+from src.bot.handlers.sell import handle_token_selection
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -18,13 +21,16 @@ token_info_service = TokenInfoService()
 async def format_token_info(token_address: str, balance: float, token_info: dict) -> str:
     """Форматирует информацию о токене для отображения"""
     token_value_usd = balance * token_info.price_usd
-    deep_link = f"https://t.me/test2737237bot?start=token-{token_address}"  # Укажи username своего бота
-
+    bot_username = os.getenv("BOT_USERNAME", "").replace("@", "")  # Убираем @ если есть
+    
+    # Создаем правильную ссылку на бота
+    token_link = f"https://t.me/{bot_username}?start=sell_{token_address}"
+    
     return (
-        f"💎 {token_info.symbol} ([{token_info.name}]({deep_link}))\n"
+        f"💎 {token_info.symbol} - [{token_info.name}]({token_link})\n"
         f"└ *Баланс:* `{_format_price(balance)}` (`{_format_price(token_value_usd)}`$)\n"
-        f"└ *Цена:* \\${_format_price(token_info.price_usd)}\n"
-        f"└ *Market Cap:* \\${_format_price(token_info.market_cap)}\n"
+        f"└ *Цена:* ${_format_price(token_info.price_usd)}\n"
+        f"└ *Market Cap:* ${_format_price(token_info.market_cap)}\n"
         f"└ *Renounced:* {'✅' if token_info.is_renounced else '❌'}\n"
         f"└ *Burnt:* {'✅' if token_info.is_burnt else '❌'}\n"
         f"└ *Адрес:* `{token_address}`\n"
@@ -89,17 +95,9 @@ async def show_positions(callback_query: types.CallbackQuery, session: AsyncSess
                 message_text += await format_token_info(token_address, balance, token_info) + "\n"
 
             # Создаем клавиатуру с кнопками для каждого токена
-            keyboard = []
-            for token_address, _, token_info, _ in tokens_info:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        text=f"Продать {token_info.symbol}",
-                        callback_data=f"select_token_{token_address}"
-                    )
-                ])
-
-            # Добавляем кнопку возврата
-            keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
+            keyboard = [
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ]
 
             await callback_query.message.edit_text(
                 message_text,
@@ -123,5 +121,28 @@ async def show_positions(callback_query: types.CallbackQuery, session: AsyncSess
             "❌ Произошла ошибка при получении информации о позициях",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+            ])
+        ) 
+
+@router.callback_query(lambda c: c.data.startswith("select_token_"))
+async def handle_token_selection_from_message(callback_query: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    """Обработчик выбора токена из сообщения"""
+    try:
+        token_address = callback_query.data.replace("select_token_", "")
+        
+        # Создаем новый callback query с тем же token_address
+        modified_callback = callback_query
+        modified_callback.data = f"select_token_{token_address}"
+        
+        # Вызываем обработчик из sell.py
+        await handle_token_selection(modified_callback, state, session)
+        
+    except Exception as e:
+        logger.error(f"Error handling token selection from message: {str(e)}")
+        traceback.print_exc()
+        await callback_query.message.edit_text(
+            "❌ Произошла ошибка при выборе токена",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="open_positions")]
             ])
         ) 
