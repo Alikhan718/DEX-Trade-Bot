@@ -307,7 +307,6 @@ class SolanaClient:
                 await send_request_with_rate_limit(self.client, self.client.get_latest_blockhash)).value.blockhash
             tx_buy.fee_payer = self.payer.pubkey()
             tx_buy.sign(self.payer)
-            logger.info("COMPUTE UNIT PRICE:", self.compute_unit_price)
             tx_buy_signature = await send_request_with_rate_limit(
                 self.client,
                 self.client.send_transaction,
