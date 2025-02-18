@@ -21,9 +21,6 @@ from src.bot.states import BuyStates, AutoBuySettingsStates, LimitBuyStates, Sel
 from solders.pubkey import Pubkey
 from src.solana_module.utils import get_bonding_curve_address
 from ..crud import get_user_setting, update_user_setting
-from src.solana_module.amm4_solana_client import RaydiumAmmV4
-from solders.keypair import Keypair
-import base58
 
 # from bot import bot
 
@@ -240,7 +237,6 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
         sol_price = await solana_service.get_sol_price()
         usd_balance = balance * sol_price
         settings = await get_user_setting(user_id, 'buy', session)
-        data = await state.get_data()
         # Save token address and initial slippage to state
         await state.update_data({
             'token_address': token_address,
@@ -249,11 +245,10 @@ async def handle_token_input(message: types.Message, state: FSMContext, session:
             'balance': balance,
             'sol_price': sol_price,
             'usd_balance': usd_balance,
-            'instructions': False,
         })
 
         # Get current slippage from state
-        
+        data = await state.get_data()
         slippage = data.get('slippage', 1.0)  # Default to 1% if not set
 
         # Формируем клавиатуру
@@ -324,7 +319,6 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
         slippage = data.get("slippage", 1.0)
         is_limit_order = data.get("is_limit_order", False)
         trigger_price_percent = data.get("trigger_price_percent")
-        instructions = data.get("instructions")
 
         logger.info(f"Buy parameters - Token: {token_address}, Amount: {amount_sol} SOL, Slippage: {slippage}%")
 
@@ -398,18 +392,12 @@ async def handle_confirm_buy(callback_query: types.CallbackQuery, state: FSMCont
 
         # Execute buy transaction
         logger.info("Executing buy transaction")
-        if instructions:
-            kp = Keypair.from_bytes(base58.b58decode(user.private_key))
-            raydium = RaydiumAmmV4(kp, data.get('gas_fee', 10000))
-            tx_signature = await raydium.buy_quick(instructions)
-            # Save token address and initial slippage to state
-        else:
-            tx_signature = await tx_handler.buy_token(
-                token_address=token_address,
-                amount_sol=amount_sol,
-                slippage=slippage,
-                user=user
-            )
+        tx_signature = await tx_handler.buy_token(
+            token_address=token_address,
+            amount_sol=amount_sol,
+            slippage=slippage,
+            user=user
+        )
 
         if tx_signature:
             logger.info(f"Buy transaction successful: {tx_signature}")
@@ -688,9 +676,6 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
 
         # Get current data
         user_id = user_id if user_id else message.from_user.id
-        stmt = select(User).where(User.telegram_id == user_id)
-        result = await session.execute(stmt)
-        user = result.unique().scalar_one_or_none()
         settings = await get_user_setting(user_id, 'buy', session)
         data = await state.get_data()
         token_address = data.get("token_address")
@@ -699,11 +684,6 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         is_limit_order = data.get("is_limit_order", False)
         trigger_price_percent = data.get("trigger_price_percent", 20)
         logger.info(f"[BUY] Current state data: {data}")
-        kp = Keypair.from_bytes(base58.b58decode(user.private_key))
-        raydium = RaydiumAmmV4(kp, settings['gas_fee'])
-        instructions = await raydium.prepare_buy_transaction(mint=token_address, sol_in=amount_sol, slippage=settings['slippage'])
-        print(instructions)
-        await state.update_data(instructions=instructions)
 
         if not token_address:
             await message.edit_text(
@@ -728,6 +708,9 @@ async def show_buy_menu(message: types.Message, state: FSMContext, session: Asyn
         # Получаем баланс пользователя
         if not user_id:
             user_id = get_real_user_id(message)
+        stmt = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt)
+        user = result.unique().scalar_one_or_none()
 
         if not user:
             await message.edit_text(

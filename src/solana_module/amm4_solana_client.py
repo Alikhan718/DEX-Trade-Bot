@@ -490,39 +490,23 @@ class RaydiumAmmV4:
         print("Transaction not confirmed within the retry limit.")
         return False
 
-
-    async def prepare_buy_transaction(self, mint: str, sol_in: float = 0.01, slippage: int = 5, antimev=False):
+    async def buy(self, pair_address: str, sol_in: float = 0.01, slippage: int = 5, antimev=False) -> bool:
         """
-        Prepares all the necessary components for a buy transaction without executing it.
-        Returns the prepared transaction and timing metrics.
-        
-        Args:
-            pair_address (str): The address of the trading pair
-            sol_in (float): Amount of SOL to swap
-            slippage (int): Allowed slippage percentage
-            antimev (bool): Whether to include antimev protection
-            
-        Returns:
-            tuple: (VersionedTransaction or None, dict of timing metrics)
+        Buys the 'other' token side from the pool using SOL as input (wrapped as WSOL).
+        Includes detailed timing measurements for each operation.
         """
         timings = {}
         total_start = time.time()
         
         try:
-            pair_address = await get_pool(mint)
-            if not pair_address:
-                print("No valid pool address returned.")
-                return False
-
-            print("Pool found!")
             # Pool Keys Fetching
             pool_keys_start = time.time()
-            print(f"Preparing buy transaction for pair address: {pair_address}")
+            print(f"Starting buy transaction for pair address: {pair_address}")
             print("Fetching pool keys...")
             pool_keys = await self.fetch_amm_v4_pool_keys(pair_address)
             if pool_keys is None:
                 print("No pool keys found...")
-                return None, {'pool_keys_fetch': time.time() - pool_keys_start}
+                return False
             timings['pool_keys_fetch'] = time.time() - pool_keys_start
             print("Pool keys fetched successfully.")
             
@@ -542,7 +526,7 @@ class RaydiumAmmV4:
             base_reserve, quote_reserve, token_decimal = await self.get_amm_v4_reserves(pool_keys)
             if base_reserve is None or quote_reserve is None:
                 print("Error fetching pool reserves.")
-                return None, {'reserves_fetch': time.time() - reserves_start}
+                return False
             timings['reserves_fetch'] = time.time() - reserves_start
             
             # Amount Calculations
@@ -601,7 +585,7 @@ class RaydiumAmmV4:
             
             if balance < (amount_in + balance_needed + MINIMUM_TRANSACTION_FEE):
                 print("Insufficient balance to complete the transaction.")
-                return None, timings
+                return False
             timings['wsol_setup'] = time.time() - wsol_setup_start
             
             # Transaction Building
@@ -617,121 +601,47 @@ class RaydiumAmmV4:
                 seed_b64,
                 create_token_account_instruction
             )
-            
-            # Fetch latest blockhash
             timings['transaction_building'] = time.time() - tx_build_start
             
-            # Total preparation time
-            timings['total_preparation'] = time.time() - total_start
+            # Transaction Execution
+            tx_execution_start = time.time()
+            latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
+            latest_blockhash = latest_blockhash_resp.value.blockhash
             
-            print("\nTransaction Preparation Timing Report:")
+            compiled_message = MessageV0.try_compile(
+                payer=self.payer_keypair.pubkey(),
+                instructions=instructions,
+                address_lookup_table_accounts=[],
+                recent_blockhash=latest_blockhash
+            )
+            
+            txn = VersionedTransaction(compiled_message, [self.payer_keypair])
+            send_resp = await self.client.send_transaction(
+                txn=txn,
+                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed, max_retries=0),
+            )
+            txn_sig = send_resp.value
+            print("Transaction Signature:", txn_sig)
+            timings['transaction_execution'] = time.time() - tx_execution_start
+            
+            # Transaction Confirmation
+            confirmation_start = time.time()
+            confirmed = await self.confirm_txn(txn_sig)
+            timings['transaction_confirmation'] = time.time() - confirmation_start
+            
+            # Total time
+            timings['total_execution'] = time.time() - total_start
+            
+            # Print detailed timing report
+            print("\nDetailed Timing Report:")
             for operation, duration in timings.items():
                 print(f"{operation}: {duration:.4f} seconds")
             
-            return instructions
-
-        except Exception as e:
-            print("Error occurred during transaction preparation:", e)
-            return None
-        
-    
-    async def buy_quick(self, instructions):
-        try:
-            execution_start = time.time()
-            if instructions is None:
-                return False
-            
-            latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
-            latest_blockhash = latest_blockhash_resp.value.blockhash
-            
-            compiled_message = MessageV0.try_compile(
-                payer=self.payer_keypair.pubkey(),
-                instructions=instructions,
-                address_lookup_table_accounts=[],
-                recent_blockhash=latest_blockhash
-            )
-            
-            transaction = VersionedTransaction(compiled_message, [self.payer_keypair])
-                
-            # Execute the transaction
-            send_resp = await self.client.send_transaction(
-                txn=transaction,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed, max_retries=0),
-            )
-            txn_sig = send_resp.value
-            print("Transaction Signature:", txn_sig)
-            
-            # Confirm the transaction
-            confirmation_start = time.time()
-            confirmed = await self.confirm_txn(txn_sig)
-            confirmation_time = time.time() - confirmation_start
-            
-            # Calculate execution metrics
-            execution_time = time.time() - execution_start
-            
-            print("\nExecution Timing Report:")
-            print(f"Transaction execution time: {execution_time:.4f} seconds")
-            print(f"Confirmation time: {confirmation_time:.4f} seconds")
-            
+            print("Transaction confirmed:", confirmed)
             return txn_sig if confirmed else False
 
         except Exception as e:
-            print("Error occurred during transaction execution:", e)
-            return False
-            
-
-
-    async def buy(self, mint: str, sol_in: float = 0.01, slippage: int = 5, antimev=False) -> bool:
-        """
-        Executes a buy transaction using the prepared transaction from prepare_buy_transaction.
-        """
-        execution_start = time.time()
-        
-        try:
-            # Prepare the transaction
-            instructions = await self.prepare_buy_transaction(
-                mint, sol_in, slippage, antimev
-            )
-            
-            if instructions is None:
-                return False
-            
-            latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
-            latest_blockhash = latest_blockhash_resp.value.blockhash
-            
-            compiled_message = MessageV0.try_compile(
-                payer=self.payer_keypair.pubkey(),
-                instructions=instructions,
-                address_lookup_table_accounts=[],
-                recent_blockhash=latest_blockhash
-            )
-            
-            transaction = VersionedTransaction(compiled_message, [self.payer_keypair])
-                
-            # Execute the transaction
-            send_resp = await self.client.send_transaction(
-                txn=transaction,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed, max_retries=0),
-            )
-            txn_sig = send_resp.value
-            print("Transaction Signature:", txn_sig)
-            
-            # Confirm the transaction
-            confirmation_start = time.time()
-            confirmed = await self.confirm_txn(txn_sig)
-            confirmation_time = time.time() - confirmation_start
-            
-            # Calculate execution metrics
-            execution_time = time.time() - execution_start
-            
-            print("\nExecution Timing Report:")
-            print(f"Transaction execution time: {execution_time:.4f} seconds")
-            print(f"Confirmation time: {confirmation_time:.4f} seconds")
-            
-            return txn_sig if confirmed else False
-
-        except Exception as e:
-            print("Error occurred during transaction execution:", e)
+            print("Error occurred during 'buy' transaction:", e)
             return False
 
     async def _build_transaction_instructions(self, payer, wsol_account, token_account, pool_keys, 
@@ -763,14 +673,14 @@ class RaydiumAmmV4:
         ]
         
         # Add antimev tip if enabled
-        # jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
-        # print(f"Using antimev tip account: {jito_tip_account}")
-        # jito_tip_ix = transfer(TransferParams(
-        #     from_pubkey=payer,
-        #     to_pubkey=jito_tip_account,
-        #     lamports=10000
-        # ))
-        # instructions.append(jito_tip_ix)
+        jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+        print(f"Using antimev tip account: {jito_tip_account}")
+        jito_tip_ix = transfer(TransferParams(
+            from_pubkey=payer,
+            to_pubkey=jito_tip_account,
+            lamports=10000
+        ))
+        instructions.append(jito_tip_ix)
         
         if create_token_account_instruction:
             instructions.append(create_token_account_instruction)
@@ -991,7 +901,22 @@ class RaydiumAmmV4:
          2) Calls self.buy() using that pool
         """
         try:
-            res = await self.buy(mint=mint, sol_in=sol_in, slippage=slippage, antimev=antimev)
+            pair_address = await get_pool(mint)
+            if not pair_address:
+                print("No valid pool address returned.")
+                return False
+
+            print("Pool found!")
+            pool_keys = await self.fetch_amm_v4_pool_keys(pair_address)
+            if not pool_keys:
+                print(f"Failed to fetch AMM v4 pool keys for {pair_address}.")
+                return False
+            print("Pool Keys fetched successfully!")
+            print("AMM ID:", pool_keys.amm_id)
+            print("Base Mint:", pool_keys.base_mint)
+            print("Quote Mint:", pool_keys.quote_mint)
+
+            res = await self.buy(pair_address=pair_address, sol_in=sol_in, slippage=slippage, antimev=antimev)
             if res:
                 print("Транзакция на покупку прошла успешно!")
                 return res
