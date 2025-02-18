@@ -50,7 +50,7 @@ async def show_positions(callback_query: types.CallbackQuery, session: AsyncSess
             return
 
         # Создаем обработчик транзакций
-        tx_handler = UserTransactionHandler(user.private_key, 10000000)
+        tx_handler = UserTransactionHandler(user.private_key, 10000)
         
         try:
             # Получаем баланс SOL

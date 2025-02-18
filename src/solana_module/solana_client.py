@@ -220,30 +220,33 @@ class SolanaClient:
     async def create_associated_token_account(self, mint: Pubkey) -> Pubkey:
         """Creates associated token account for given mint if it doesn't exist."""
         associated_token_account = get_associated_token_address(self.payer.pubkey(), mint)
-        logger.info("Creating associated token account...")
-        create_ata_ix = spl_token.create_associated_token_account(
-            payer=self.payer.pubkey(),
-            owner=self.payer.pubkey(),
-            mint=mint
-        )
-        compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
-        tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
-        tx_ata.recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
-        tx_ata.fee_payer = self.payer.pubkey()
-        tx_ata.sign(self.payer)
-        try:
-            tx_ata_signature = await self.client.send_transaction(
-                tx_ata,
-                self.payer,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Processed)
+        account_info = await send_request_with_rate_limit(self.client, self.client.get_account_info,
+                                                          associated_token_account)
+        if account_info:
+            logger.info("Creating associated token account...")
+            create_ata_ix = spl_token.create_associated_token_account(
+                payer=self.payer.pubkey(),
+                owner=self.payer.pubkey(),
+                mint=mint
             )
-            logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
-            logger.info(f"Associated token account created: {associated_token_account}")
-        except Exception as e:
-            logger.error(f"Failed to send ATA transaction: {e}")
-            logger.error(traceback.format_exc())
-            raise
-        return associated_token_account
+            compute_budget_ix = set_compute_unit_price(int(self.compute_unit_price))
+            tx_ata = Transaction().add(create_ata_ix).add(compute_budget_ix)
+            tx_ata.recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+            tx_ata.fee_payer = self.payer.pubkey()
+            tx_ata.sign(self.payer)
+            try:
+                tx_ata_signature = await self.client.send_transaction(
+                    tx_ata,
+                    self.payer,
+                    opts=TxOpts(skip_preflight=True, preflight_commitment=Processed)
+                )
+                logger.info(f"ATA Transaction sent: https://explorer.solana.com/tx/{tx_ata_signature.value}")
+                logger.info(f"Associated token account created: {associated_token_account}")
+            except Exception as e:
+                logger.error(f"Failed to send ATA transaction: {e}")
+                logger.error(traceback.format_exc())
+                raise
+            return associated_token_account
 
     @retry(
         retry=retry_if_exception(is_rate_limit_error),
@@ -1034,7 +1037,7 @@ class SolanaClient:
                         print(lamports)
 
                         if lamports > 0:
-                            mints_with_balance.append(mint)
+                            mints_with_balance.append((mint, lamports))
 
                     except KeyError:
                         continue  # Если нет нужных ключей, пропускаем
@@ -1048,7 +1051,7 @@ class SolanaClient:
             token_tasks = []
             for token_address in token_addresses:
                 # Создаем асинхронную задачу для получения информации о токене
-                token_tasks.append(self.token_info(token_address))
+                token_tasks.append(self.token_info(token_address[0]))
             mints = []
             # Запрашиваем всю информацию о токенах параллельно
             token_infos = await asyncio.gather(*token_tasks, return_exceptions=True)
@@ -1069,12 +1072,8 @@ class SolanaClient:
                     priceUsd = float(ti.get("priceUsd"))
                     print(address)
                     append = True
-                    balance = 0
-                    if tx_handler:
-                        balance = await tx_handler.client.get_token_balance(Pubkey.from_string(address))
-                        if not balance:
-                            append = False
-                        balance *= priceUsd
+                    balance = mint[1]
+                    balance *= priceUsd
                     if append:
                         mints.append((address, market_cap, token_name, token_symbol, balance))
                 except (KeyError, TypeError) as e:

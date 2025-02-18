@@ -53,10 +53,10 @@ async def on_sell_button(callback_query: types.CallbackQuery, state: FSMContext,
             return
 
         # Create SolanaClient instance
-        solana_client = SolanaClient(compute_unit_price=1000000)  # Default compute unit price
+        solana_client = SolanaClient(compute_unit_price=10000)  # Default compute unit price
 
         # Get user's tokens
-        tx_handler = UserTransactionHandler(user.private_key, 10000000)
+        tx_handler = UserTransactionHandler(user.private_key, 10000)
         tokens = await solana_client.get_tokens(user.solana_wallet, tx_handler)
 
         if not tokens:
@@ -109,7 +109,7 @@ async def handle_token_selection(callback_query: types.CallbackQuery, state: FSM
         user_id = get_real_user_id(callback_query)
         stmt = await session.execute(select(User).where(User.telegram_id == user_id))
         user = stmt.unique().scalar_one_or_none()
-        tx_handler = UserTransactionHandler(user.private_key, 10000000)
+        tx_handler = UserTransactionHandler(user.private_key, 10000)
         token_balance = await tx_handler.client.get_token_balance(Pubkey.from_string(token_address))
 
         mint = Pubkey.from_string(token_address)

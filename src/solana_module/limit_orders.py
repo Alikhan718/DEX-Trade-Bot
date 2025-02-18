@@ -160,7 +160,7 @@ class AsyncLimitOrders:
             # Создаем обработчик транзакций
             tx_handler = UserTransactionHandler(
                 private_key_str=user.private_key,
-                compute_unit_price=1000000  # Default compute unit price
+                compute_unit_price=10000  # Default compute unit price
             )
             
             logger.info("[LIMIT_ORDERS] Created transaction handler for order #%d", order.id)

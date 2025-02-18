@@ -28,7 +28,7 @@ class SolanaService:
     def create_client(self, private_key: str) -> 'SolanaClient':
         """Create a new SolanaClient instance with the given private key"""
         from src.solana_module.solana_client import SolanaClient
-        client = SolanaClient(compute_unit_price=1000, private_key=private_key)
+        client = SolanaClient(compute_unit_price=10000, private_key=private_key)
         client.load_keypair()
         return client
 
