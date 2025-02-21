@@ -63,7 +63,7 @@ MINIMUM_TRANSACTION_FEE = 5000  # Example constant transaction fee in lamports
 def get_pool_info_by_id_sync(pool_id: str) -> dict:
     """
     A tiny helper that does synchronous GET (if you still need it outside the async class).
-    You can remove or replace this. 
+    You can remove or replace this.
     """
     base_url = "https://api-v3.raydium.io/pools/info/ids"
     params = {"ids": pool_id}
@@ -221,7 +221,7 @@ class RaydiumAmmV4:
 
         # Example compute budget
         self.UNIT_BUDGET = 2_000_000
-        self.UNIT_PRICE = unit_price
+        self.UNIT_PRICE = int(unit_price)
         self.sdk = JitoJsonRpcSDK(url="https://mainnet.block-engine.jito.wtf/api/v1")
 
         # Hard-coded addresses for Raydium
@@ -380,7 +380,7 @@ class RaydiumAmmV4:
 
             # The JSON parsed approach from the standard `getProgramAccounts` or `getTokenAccountBalance`
             # is not used here. Instead, you can parse the 165-byte token account data layout yourself
-            # or you can do a separate approach. 
+            # or you can do a separate approach.
             #
             # For brevity, let's do a simpler approach:
             quote_account = balances_response.value[0]
@@ -495,19 +495,19 @@ class RaydiumAmmV4:
         """
         Prepares all the necessary components for a buy transaction without executing it.
         Returns the prepared transaction and timing metrics.
-        
+
         Args:
             pair_address (str): The address of the trading pair
             sol_in (float): Amount of SOL to swap
             slippage (int): Allowed slippage percentage
             antimev (bool): Whether to include antimev protection
-            
+
         Returns:
             tuple: (VersionedTransaction or None, dict of timing metrics)
         """
         timings = {}
         total_start = time.time()
-        
+
         try:
             pair_address = await get_pool(mint)
             if not pair_address:
@@ -525,7 +525,7 @@ class RaydiumAmmV4:
                 return None, {'pool_keys_fetch': time.time() - pool_keys_start}
             timings['pool_keys_fetch'] = time.time() - pool_keys_start
             print("Pool keys fetched successfully.")
-            
+
             # Mint Selection
             mint_start = time.time()
             mint = (
@@ -534,7 +534,7 @@ class RaydiumAmmV4:
                 else pool_keys.quote_mint
             )
             timings['mint_selection'] = time.time() - mint_start
-            
+
             # Reserve Calculation
             reserves_start = time.time()
             print("Calculating transaction amounts...")
@@ -544,7 +544,7 @@ class RaydiumAmmV4:
                 print("Error fetching pool reserves.")
                 return None, {'reserves_fetch': time.time() - reserves_start}
             timings['reserves_fetch'] = time.time() - reserves_start
-            
+
             # Amount Calculations
             amounts_start = time.time()
             amount_out_estimate = self.sol_for_tokens(sol_in, base_reserve, quote_reserve)
@@ -554,7 +554,7 @@ class RaydiumAmmV4:
             minimum_amount_out = int(amount_out_with_slippage * (10 ** token_decimal))
             print(f"Amount In (lamports): {amount_in} | Minimum Amount Out: {minimum_amount_out}")
             timings['amount_calculations'] = time.time() - amounts_start
-            
+
             # Token Account Check
             token_account_start = time.time()
             resp = await self.client.get_token_accounts_by_owner(
@@ -562,7 +562,7 @@ class RaydiumAmmV4:
                 TokenAccountOpts(mint=mint),
                 commitment=Processed
             )
-            
+
             if resp.value:
                 token_account = resp.value[0].pubkey
                 create_token_account_instruction = None
@@ -578,7 +578,7 @@ class RaydiumAmmV4:
                 )
                 print("No existing token account found; creating associated token account.")
             timings['token_account_check'] = time.time() - token_account_start
-            
+
             # WSOL Account Setup
             wsol_setup_start = time.time()
             seed_bytes = os.urandom(24)
@@ -588,22 +588,22 @@ class RaydiumAmmV4:
                 seed_b64,
                 TOKEN_PROGRAM_ID
             )
-            
+
             balance_needed = await self.client.get_minimum_balance_for_rent_exemption(ACCOUNT_LAYOUT_LEN)
             balance_needed = balance_needed.value
-            
+
             balance_resp = await self.client.get_balance(self.payer_keypair.pubkey())
             balance = balance_resp.value
-            
+
             print(f"Wallet Balance: {balance} lamports")
             print(f"Rent-exempt min balance needed: {balance_needed} lamports")
             print("Total required (approx):", amount_in + balance_needed + MINIMUM_TRANSACTION_FEE)
-            
+
             if balance < (amount_in + balance_needed + MINIMUM_TRANSACTION_FEE):
                 print("Insufficient balance to complete the transaction.")
                 return None, timings
             timings['wsol_setup'] = time.time() - wsol_setup_start
-            
+
             # Transaction Building
             tx_build_start = time.time()
             instructions = await self._build_transaction_instructions(
@@ -617,42 +617,42 @@ class RaydiumAmmV4:
                 seed_b64,
                 create_token_account_instruction
             )
-            
+
             # Fetch latest blockhash
             timings['transaction_building'] = time.time() - tx_build_start
-            
+
             # Total preparation time
             timings['total_preparation'] = time.time() - total_start
-            
+
             print("\nTransaction Preparation Timing Report:")
             for operation, duration in timings.items():
                 print(f"{operation}: {duration:.4f} seconds")
-            
+
             return instructions
 
         except Exception as e:
             print("Error occurred during transaction preparation:", e)
             return None
-        
-    
+
+
     async def buy_quick(self, instructions):
         try:
             execution_start = time.time()
             if instructions is None:
                 return False
-            
+
             latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
             latest_blockhash = latest_blockhash_resp.value.blockhash
-            
+
             compiled_message = MessageV0.try_compile(
                 payer=self.payer_keypair.pubkey(),
                 instructions=instructions,
                 address_lookup_table_accounts=[],
                 recent_blockhash=latest_blockhash
             )
-            
+
             transaction = VersionedTransaction(compiled_message, [self.payer_keypair])
-                
+
             # Execute the transaction
             send_resp = await self.client.send_transaction(
                 txn=transaction,
@@ -660,25 +660,25 @@ class RaydiumAmmV4:
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
-            
+
             # Confirm the transaction
             confirmation_start = time.time()
             confirmed = await self.confirm_txn(txn_sig)
             confirmation_time = time.time() - confirmation_start
-            
+
             # Calculate execution metrics
             execution_time = time.time() - execution_start
-            
+
             print("\nExecution Timing Report:")
             print(f"Transaction execution time: {execution_time:.4f} seconds")
             print(f"Confirmation time: {confirmation_time:.4f} seconds")
-            
+
             return txn_sig if confirmed else False
 
         except Exception as e:
             print("Error occurred during transaction execution:", e)
             return False
-            
+
 
 
     async def buy(self, mint: str, sol_in: float = 0.01, slippage: int = 5, antimev=False) -> bool:
@@ -686,28 +686,28 @@ class RaydiumAmmV4:
         Executes a buy transaction using the prepared transaction from prepare_buy_transaction.
         """
         execution_start = time.time()
-        
+
         try:
             # Prepare the transaction
             instructions = await self.prepare_buy_transaction(
                 mint, sol_in, slippage, antimev
             )
-            
+
             if instructions is None:
                 return False
-            
+
             latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
             latest_blockhash = latest_blockhash_resp.value.blockhash
-            
+
             compiled_message = MessageV0.try_compile(
                 payer=self.payer_keypair.pubkey(),
                 instructions=instructions,
                 address_lookup_table_accounts=[],
                 recent_blockhash=latest_blockhash
             )
-            
+
             transaction = VersionedTransaction(compiled_message, [self.payer_keypair])
-                
+
             # Execute the transaction
             send_resp = await self.client.send_transaction(
                 txn=transaction,
@@ -715,32 +715,32 @@ class RaydiumAmmV4:
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
-            
+
             # Confirm the transaction
             confirmation_start = time.time()
             confirmed = await self.confirm_txn(txn_sig)
             confirmation_time = time.time() - confirmation_start
-            
+
             # Calculate execution metrics
             execution_time = time.time() - execution_start
-            
+
             print("\nExecution Timing Report:")
             print(f"Transaction execution time: {execution_time:.4f} seconds")
             print(f"Confirmation time: {confirmation_time:.4f} seconds")
-            
+
             return txn_sig if confirmed else False
 
         except Exception as e:
             print("Error occurred during transaction execution:", e)
             return False
 
-    async def _build_transaction_instructions(self, payer, wsol_account, token_account, pool_keys, 
-                                    amount_in, minimum_amount_out, balance_needed, seed_b64, 
+    async def _build_transaction_instructions(self, payer, wsol_account, token_account, pool_keys,
+                                    amount_in, minimum_amount_out, balance_needed, seed_b64,
                                     create_token_account_instruction):
         """Helper method to build transaction instructions."""
         instructions = [
-            set_compute_unit_limit(self.UNIT_BUDGET),
-            set_compute_unit_price(self.UNIT_PRICE),
+            set_compute_unit_limit(int(self.UNIT_BUDGET)),
+            set_compute_unit_price(int(self.UNIT_PRICE)),
             create_account_with_seed(
                 CreateAccountWithSeedParams(
                     from_pubkey=payer,
@@ -761,7 +761,7 @@ class RaydiumAmmV4:
                 )
             )
         ]
-        
+
         # Add antimev tip if enabled
         # jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
         # print(f"Using antimev tip account: {jito_tip_account}")
@@ -771,10 +771,10 @@ class RaydiumAmmV4:
         #     lamports=10000
         # ))
         # instructions.append(jito_tip_ix)
-        
+
         if create_token_account_instruction:
             instructions.append(create_token_account_instruction)
-        
+
         # Add swap and cleanup instructions
         swap_instruction = self.make_amm_v4_swap_instruction(
             amount_in=amount_in,
@@ -784,7 +784,7 @@ class RaydiumAmmV4:
             accounts=pool_keys,
             owner=payer,
         )
-        
+
         recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
         transfer_ix = transfer(
             TransferParams(
@@ -793,7 +793,7 @@ class RaydiumAmmV4:
                 lamports=amount_in // 100
             )
         )
-        
+
         instructions.extend([
             swap_instruction,
             close_account(
@@ -806,7 +806,7 @@ class RaydiumAmmV4:
             ),
             transfer_ix,
         ])
-        
+
         return instructions
 
     async def sell(self, pair_address: str, percentage: int = 100, slippage: int = 5, antimev=False) -> bool:
@@ -927,8 +927,8 @@ class RaydiumAmmV4:
                 )
 
             instructions = [
-                set_compute_unit_limit(self.UNIT_BUDGET),
-                set_compute_unit_price(self.UNIT_PRICE),
+                set_compute_unit_limit(int(self.UNIT_BUDGET)),
+                set_compute_unit_price(int(self.UNIT_PRICE)),
                 create_wsol_account_instruction,
                 init_wsol_account_instruction,
                 swap_instruction,
