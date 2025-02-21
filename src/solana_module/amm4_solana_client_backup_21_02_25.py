@@ -116,12 +116,12 @@ async def get_pool_info_by_id(pool_id: str) -> dict:
 
 
 async def get_pool_info_by_mint(
-        mint: str,
-        pool_type: str = "all",
-        sort_field: str = "default",
-        sort_type: str = "desc",
-        page_size: int = 100,
-        page: int = 1
+    mint: str,
+    pool_type: str = "all",
+    sort_field: str = "default",
+    sort_type: str = "desc",
+    page_size: int = 100,
+    page: int = 1
 ) -> dict:
     """
     Asynchronous version of fetching Raydium pool info by mint.
@@ -233,9 +233,8 @@ class RaydiumAmmV4:
         """
         Fetch on-chain data for an AMM V4 pool and decode the layouts.
         """
-
         def u64_bytes(value: int) -> bytes:
-            if not (0 <= value < 2 ** 64):
+            if not (0 <= value < 2**64):
                 raise ValueError("Value must be in the range of a u64 (0 to 2^64 - 1).")
             return struct.pack('<Q', value)
 
@@ -296,13 +295,13 @@ class RaydiumAmmV4:
             return None
 
     def make_amm_v4_swap_instruction(
-            self,
-            amount_in: int,
-            minimum_amount_out: int,
-            token_account_in: Pubkey,
-            token_account_out: Pubkey,
-            accounts: AmmV4PoolKeys,
-            owner: Pubkey
+        self,
+        amount_in: int,
+        minimum_amount_out: int,
+        token_account_in: Pubkey,
+        token_account_out: Pubkey,
+        accounts: AmmV4PoolKeys,
+        owner: Pubkey
     ):
         """
         Creates the Instruction object for swapping on Raydium AMM V4.
@@ -421,8 +420,7 @@ class RaydiumAmmV4:
     # Simplistic constant-product math helpers for local estimates
     # (remain synchronous, no I/O here)
     # -------------------------------------------------------------------------
-    def sol_for_tokens(self, sol_amount: float, base_vault_balance: float, quote_vault_balance: float,
-                       swap_fee: float = 0.25) -> float:
+    def sol_for_tokens(self, sol_amount: float, base_vault_balance: float, quote_vault_balance: float, swap_fee: float = 0.25) -> float:
         """
         Approx how many base tokens we'd get for a given sol_amount,
         using a constant-product model with a swap_fee %.
@@ -433,8 +431,7 @@ class RaydiumAmmV4:
         tokens_received = base_vault_balance - updated_base_vault_balance
         return round(tokens_received, 9)
 
-    def tokens_for_sol(self, token_amount: float, base_vault_balance: float, quote_vault_balance: float,
-                       swap_fee: float = 0.25) -> float:
+    def tokens_for_sol(self, token_amount: float, base_vault_balance: float, quote_vault_balance: float, swap_fee: float = 0.25) -> float:
         """
         Approx how many SOL we'd get for a given token_amount,
         using a constant-product model with a swap_fee %.
@@ -492,6 +489,7 @@ class RaydiumAmmV4:
 
         print("Transaction not confirmed within the retry limit.")
         return False
+
 
     async def prepare_buy_transaction(self, mint: str, sol_in: float = 0.01, slippage: int = 5, antimev=False):
         """
@@ -636,6 +634,7 @@ class RaydiumAmmV4:
             print("Error occurred during transaction preparation:", e)
             return None
 
+
     async def buy_quick(self, instructions):
         try:
             execution_start = time.time()
@@ -679,6 +678,8 @@ class RaydiumAmmV4:
         except Exception as e:
             print("Error occurred during transaction execution:", e)
             return False
+
+
 
     async def buy(self, mint: str, sol_in: float = 0.01, slippage: int = 5, antimev=False) -> bool:
         """
@@ -734,8 +735,8 @@ class RaydiumAmmV4:
             return False
 
     async def _build_transaction_instructions(self, payer, wsol_account, token_account, pool_keys,
-                                              amount_in, minimum_amount_out, balance_needed, seed_b64,
-                                              create_token_account_instruction):
+                                    amount_in, minimum_amount_out, balance_needed, seed_b64,
+                                    create_token_account_instruction):
         """Helper method to build transaction instructions."""
         instructions = [
             set_compute_unit_limit(int(self.UNIT_BUDGET)),
@@ -808,54 +809,61 @@ class RaydiumAmmV4:
 
         return instructions
 
-    async def get_valid_pool(self, mint: str) -> Optional[str]:
-        """
-        Возвращает валидный pool_id для заданной монеты.
-        Если get_pool(mint) возвращает None, используем фиксированный pool_id.
-        """
-        pool_id = await get_pool(mint)
-        if pool_id is None:
-            # Фолбэк на фиксированный pool_id (если применимо)
-            pool_id = "5phQt8oA1fwKDq1pLJ2E2swozfs7dgDH78iLuoUjAYhM"
-        return pool_id
-
     async def sell(self, pair_address: str, percentage: int = 100, slippage: int = 5, antimev=False) -> bool:
         """
-        Быстрая продажа с минимальным набором инструкций.
-        Выполняет своп и закрывает временный WSOL-аккаунт, минимизируя задержки.
+        Sells the base token (if base != WSOL) or the quote token (if base == WSOL) for SOL.
+        Wraps the SOL (WSOL) to do the actual swap, then closes the wrapped account.
         """
         try:
-            pool_keys = await self.fetch_amm_v4_pool_keys(pair_address)
-            if not pool_keys:
-                print("Не удалось получить pool keys.")
+            print(f"Starting sell transaction for pair address: {pair_address}")
+
+            if not (1 <= percentage <= 100):
+                print("Percentage must be between 1 and 100.")
                 return False
 
-            # Определяем монету для продажи: если базовая не WSOL, продаём её, иначе quote
-            sell_mint = pool_keys.base_mint if pool_keys.base_mint != WSOL else pool_keys.quote_mint
+            print("Fetching pool keys...")
+            pool_keys = await self.fetch_amm_v4_pool_keys(pair_address)
+            if pool_keys is None:
+                print("No pool keys found...")
+                return False
+            print("Pool keys fetched successfully.")
 
-            # Получаем баланс токена для продажи
-            token_balance = await self.get_token_balance(str(sell_mint))
+            mint = (
+                pool_keys.base_mint
+                if pool_keys.base_mint != WSOL
+                else pool_keys.quote_mint
+            )
+
+            print("Retrieving token balance...")
+            token_balance = await self.get_token_balance(str(mint))
+            print("Token Balance:", token_balance)
+
             if not token_balance or token_balance <= 0:
-                print("Недостаточный баланс токена для продажи.")
+                print("No token balance available to sell.")
                 return False
 
             adjusted_balance = token_balance * (percentage / 100)
+            print(f"Selling {percentage}% of the token balance = {adjusted_balance}")
 
-            # Получаем резервы пула и вычисляем суммы
             base_reserve, quote_reserve, token_decimal = await self.get_amm_v4_reserves(pool_keys)
             if base_reserve is None or quote_reserve is None:
-                print("Ошибка получения резервов пула.")
+                print("Error fetching pool reserves.")
                 return False
 
             amount_out_estimate = self.tokens_for_sol(adjusted_balance, base_reserve, quote_reserve)
+            print(f"Estimated Amount Out (SOL): {amount_out_estimate}")
+
             slippage_adjustment = 1 - (slippage / 100)
-            minimum_amount_out = int(amount_out_estimate * slippage_adjustment * SOL_DECIMAL)
+            amount_out_with_slippage = amount_out_estimate * slippage_adjustment
+            minimum_amount_out = int(amount_out_with_slippage * SOL_DECIMAL)
             amount_in = int(adjusted_balance * (10 ** token_decimal))
+            print(f"Amount In (tokens): {amount_in} | Min SOL Out (lamports): {minimum_amount_out}")
 
-            # Получаем ассоциированный токен-аккаунт продавца
-            token_account = get_associated_token_address(self.payer_keypair.pubkey(), sell_mint)
+            token_account = get_associated_token_address(
+                self.payer_keypair.pubkey(),
+                mint
+            )
 
-            # Создаём временный WSOL аккаунт через seed
             seed_bytes = os.urandom(24)
             seed_b64 = base64.urlsafe_b64encode(seed_bytes).decode("utf-8")
             wsol_token_account = Pubkey.create_with_seed(
@@ -864,74 +872,106 @@ class RaydiumAmmV4:
                 TOKEN_PROGRAM_ID
             )
 
-            balance_needed_resp = await self.client.get_minimum_balance_for_rent_exemption(ACCOUNT_LAYOUT_LEN)
-            balance_needed = int(balance_needed_resp.value)
+            balance_needed = await self.client.get_minimum_balance_for_rent_exemption(ACCOUNT_LAYOUT_LEN)
+            balance_needed = balance_needed.value
+            print(f"Rent-exempt min balance needed: {balance_needed} lamports")
 
-            # Строим минимальный набор инструкций
+            create_wsol_account_instruction = create_account_with_seed(
+                CreateAccountWithSeedParams(
+                    from_pubkey=self.payer_keypair.pubkey(),
+                    to_pubkey=wsol_token_account,
+                    base=self.payer_keypair.pubkey(),
+                    seed=seed_b64,
+                    lamports=int(balance_needed),
+                    space=ACCOUNT_LAYOUT_LEN,
+                    owner=TOKEN_PROGRAM_ID,
+                )
+            )
+
+            init_wsol_account_instruction = initialize_account(
+                InitializeAccountParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    account=wsol_token_account,
+                    mint=WSOL,
+                    owner=self.payer_keypair.pubkey(),
+                )
+            )
+
+            swap_instruction = self.make_amm_v4_swap_instruction(
+                amount_in=amount_in,
+                minimum_amount_out=minimum_amount_out,
+                token_account_in=token_account,
+                token_account_out=wsol_token_account,
+                accounts=pool_keys,
+                owner=self.payer_keypair.pubkey(),
+            )
+
+
+            close_wsol_account_instruction = close_account(
+                CloseAccountParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    account=wsol_token_account,
+                    dest=self.payer_keypair.pubkey(),
+                    owner=self.payer_keypair.pubkey(),
+                )
+            )
+
+            recipient = Pubkey.from_string(os.getenv('FEE_MAIN_WALLET'))
+            lamports = minimum_amount_out // 100
+            transfer_ix = transfer(
+                    TransferParams(
+                        from_pubkey=self.payer_keypair.pubkey(),
+                        to_pubkey=recipient,
+                        lamports=lamports
+                    )
+                )
+
             instructions = [
                 set_compute_unit_limit(int(self.UNIT_BUDGET)),
                 set_compute_unit_price(int(self.UNIT_PRICE)),
-                # Создание временного WSOL аккаунта
-                create_account_with_seed(
-                    CreateAccountWithSeedParams(
-                        from_pubkey=self.payer_keypair.pubkey(),
-                        to_pubkey=wsol_token_account,
-                        base=self.payer_keypair.pubkey(),
-                        seed=seed_b64,
-                        lamports=balance_needed,
-                        space=ACCOUNT_LAYOUT_LEN,
-                        owner=TOKEN_PROGRAM_ID,
-                    )
-                ),
-                # Инициализация WSOL аккаунта
-                initialize_account(
-                    InitializeAccountParams(
-                        program_id=TOKEN_PROGRAM_ID,
-                        account=wsol_token_account,
-                        mint=WSOL,
-                        owner=self.payer_keypair.pubkey(),
-                    )
-                ),
-                # Основная инструкция свопа
-                self.make_amm_v4_swap_instruction(
-                    amount_in=amount_in,
-                    minimum_amount_out=minimum_amount_out,
-                    token_account_in=token_account,
-                    token_account_out=wsol_token_account,
-                    accounts=pool_keys,
-                    owner=self.payer_keypair.pubkey()
-                ),
-                # Закрытие временного WSOL аккаунта для возврата SOL
-                close_account(
+                create_wsol_account_instruction,
+                init_wsol_account_instruction,
+                swap_instruction,
+                transfer_ix,
+                close_wsol_account_instruction,
+            ]
+
+            if antimev:
+                jito_tip_account = Pubkey.from_string(self.sdk.get_random_tip_account())
+                print(f"Using antimev tip account: {jito_tip_account}")
+                jito_tip_ix = transfer(TransferParams(
+                        from_pubkey=self.payer.pubkey(),
+                        to_pubkey=jito_tip_account,
+                        lamports=100000
+                    ))
+                instructions.append(jito_tip_ix)
+
+            # Optionally close the token account if selling 100%
+            if percentage == 100:
+                close_token_account_instruction = close_account(
                     CloseAccountParams(
                         program_id=TOKEN_PROGRAM_ID,
-                        account=wsol_token_account,
+                        account=token_account,
                         dest=self.payer_keypair.pubkey(),
                         owner=self.payer_keypair.pubkey(),
                     )
-                ),
-                # Перевод комиссии
-                transfer(
-                    TransferParams(
-                        from_pubkey=self.payer_keypair.pubkey(),
-                        to_pubkey=Pubkey.from_string(os.getenv('FEE_MAIN_WALLET')),
-                        lamports=amount_in // 100,
-                    )
-                ),
-            ]
+                )
+                instructions.append(close_token_account_instruction)
 
-            latest_blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
+            latest_blockhash_resp = await self.client.get_latest_blockhash()
             latest_blockhash = latest_blockhash_resp.value.blockhash
+
             compiled_message = MessageV0.try_compile(
                 payer=self.payer_keypair.pubkey(),
                 instructions=instructions,
                 address_lookup_table_accounts=[],
-                recent_blockhash=latest_blockhash,
+                recent_blockhash=latest_blockhash
             )
+
             txn = VersionedTransaction(compiled_message, [self.payer_keypair])
             send_resp = await self.client.send_transaction(
                 txn=txn,
-                opts=TxOpts(skip_preflight=True)
+                opts=TxOpts(skip_preflight=True),
             )
             txn_sig = send_resp.value
             print("Transaction Signature:", txn_sig)
@@ -941,7 +981,7 @@ class RaydiumAmmV4:
             return txn_sig if confirmed else False
 
         except Exception as e:
-            print("Error in fast_sell:", e)
+            print("Error occurred during 'sell' transaction:", e)
             return False
 
     async def buy_exec(self, mint: str, sol_in: float, slippage: int = 5, antimev=False) -> bool:
@@ -1010,8 +1050,8 @@ async def main():
 
     mint = "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"  # Example
     percentage = 100  # 100% of token balance to sell
-    sol_in = 0.001  # 0.001 SOL to buy with
-    slippage = 5  # 5% slippage
+    sol_in = 0.001    # 0.001 SOL to buy with
+    slippage = 5      # 5% slippage
 
     # Example buy
     buy_success = await amm.buy_exec(mint=mint, sol_in=sol_in, slippage=slippage)
